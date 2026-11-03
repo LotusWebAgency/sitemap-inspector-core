@@ -81,11 +81,22 @@ export interface FetchOptions {
   signal?: AbortSignal | undefined;
   /** A size check: the result carries the headers that tell the file size, and `range` (e.g. "bytes=0-2047") is sent as the Range header. */
   probe?: { range?: string };
+  /** How requests reach the network (default: `defaultTransport`, a direct fetch). A web build can route them through a proxy. */
+  transport?: Transport | undefined;
 }
+
+/** `finalUrl` and `redirected` travel beside the Response because a proxied Response cannot carry them. */
+export interface TransportResponse { res: Response; finalUrl: string; redirected: boolean }
+export type Transport = (url: string, init: RequestInit) => Promise<TransportResponse>;
 
 // Every request goes to the server and nothing is kept: the HTTP cache would serve a re-scan the copy it read before (up to max-age, and
 // the extension's cache is not the tab's), and Chrome answers a Range from a cached compressed body with ranges of the encoded bytes.
 const NETWORK_ONLY = { credentials: 'omit', redirect: 'follow', cache: 'no-store' } as const satisfies RequestInit;
+
+export const defaultTransport: Transport = async (url, init) => {
+  const res = await globalThis.fetch(url, { ...NETWORK_ONLY, ...init });
+  return { res, finalUrl: res.url || url, redirected: res.redirected };
+};
 
 export async function fetchTextStream(url: string, opts: FetchOptions = {}): Promise<TextStreamResult> {
   const limitMs = opts.timeoutMs ?? 30_000;
@@ -102,11 +113,13 @@ export async function fetchTextStream(url: string, opts: FetchOptions = {}): Pro
   const release = () => { disarm(); clearTimeout(totalTimer); totalTimer = undefined; outer?.removeEventListener('abort', onOuterAbort); };
   arm();
   let res: Response;
+  let finalUrl: string;
+  let redirected: boolean;
   const range = opts.probe?.range;
-  try { res = await fetch(url, { ...NETWORK_ONLY, signal: ctrl.signal, ...(range === undefined ? {} : { headers: { Range: range } }) }); }
+  try { ({ res, finalUrl, redirected } = await (opts.transport ?? defaultTransport)(url, { signal: ctrl.signal, ...(range === undefined ? {} : { headers: { Range: range } }) })); }
   catch (e) { release(); throw e; }
   const meta = {
-    status: res.status, finalUrl: res.url, redirected: res.redirected,
+    status: res.status, finalUrl, redirected,
     lastModified: res.headers.get('last-modified') ?? undefined,
     contentType: res.headers.get('content-type') ?? undefined,
     ...(opts.probe ? { sizeHeaders: { contentRange: res.headers.get('content-range'), contentLength: res.headers.get('content-length'), contentEncoding: res.headers.get('content-encoding') } } : {}),
@@ -258,7 +271,7 @@ async function gzipTrailerSize(url: string, opts: FetchOptions): Promise<number 
   if (outer?.aborted === true) onOuterAbort(); else outer?.addEventListener('abort', onOuterAbort, { once: true });
   const timer = setTimeout(() => ctrl.abort(new DOMException('timeout', 'TimeoutError')), opts.timeoutMs ?? 15_000);
   try {
-    const res = await fetch(url, { ...NETWORK_ONLY, signal: ctrl.signal, headers: { Range: 'bytes=-4' } });
+    const { res } = await (opts.transport ?? defaultTransport)(url, { signal: ctrl.signal, headers: { Range: 'bytes=-4' } });
     if (res.status !== 206 || !res.body) { void res.body?.cancel().catch(() => { /* the answer is not usable; releasing the connection */ }); return null; }
     const [tail, rest] = await peekBytes(res.body, 5);
     void rest.cancel().catch(() => { /* more than four bytes: not what was asked for */ });
@@ -312,7 +325,7 @@ async function openHead(url: string, opts: FetchOptions, range: string | undefin
  * A 206 is reported as 200: the file exists and answers.
  */
 export async function sniffSitemap(url: string, opts: FetchOptions = {}): Promise<SniffResult> {
-  const fetchOpts: FetchOptions = { timeoutMs: opts.timeoutMs ?? 15_000, totalMs: opts.totalMs ?? 30_000, signal: opts.signal };
+  const fetchOpts: FetchOptions = { timeoutMs: opts.timeoutMs ?? 15_000, totalMs: opts.totalMs ?? 30_000, signal: opts.signal, transport: opts.transport };
   const first = await openHead(url, fetchOpts, HEAD_RANGE);
   if ('sniff' in first) return first;
   const { r, head, ended, emptyAnswer } = first;

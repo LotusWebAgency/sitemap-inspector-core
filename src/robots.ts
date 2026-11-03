@@ -1,4 +1,4 @@
-import { fetchTextStream } from './fetcher.js';
+import { fetchTextStream, type Transport } from './fetcher.js';
 import { MAX_URL_CHARS } from './sitemap-limits.js';
 import { normalizeSitemapUrl } from './url.js';
 import type { FindingExample, RobotsGroup, RobotsInfo, RobotsRule } from './types.js';
@@ -96,14 +96,14 @@ export function robotsMode(robots: RobotsInfo | null): RobotsMode {
 }
 
 /** signal: the scan's, so a superseded or timed-out scan stops reading robots.txt; the fetch itself is capped at 15 s idle and 30 s in all. */
-export async function fetchRobots(origin: string, opts: { signal?: AbortSignal | undefined } = {}): Promise<RobotsInfo | null> {
+export async function fetchRobots(origin: string, opts: { signal?: AbortSignal | undefined; transport?: Transport | undefined } = {}): Promise<RobotsInfo | null> {
   const url = `${origin}/robots.txt`;
   let text = '';
   let status: number;
   let cut = false;
   let reader: ReadableStreamDefaultReader<string> | undefined;
   try {
-    const r = await fetchTextStream(url, { timeoutMs: 15_000, totalMs: 30_000, signal: opts.signal });
+    const r = await fetchTextStream(url, { timeoutMs: 15_000, totalMs: 30_000, signal: opts.signal, transport: opts.transport });
     status = r.status;
     if (!r.ok || !r.stream) return { found: false, url, status, sitemapUrls: [] };
     reader = r.stream.getReader();

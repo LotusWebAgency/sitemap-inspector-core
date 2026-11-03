@@ -1,4 +1,4 @@
-import { mediaType, sniffSitemap, type SniffKind, type SniffResult } from './fetcher.js';
+import { mediaType, sniffSitemap, type FetchOptions, type SniffKind, type SniffResult, type Transport } from './fetcher.js';
 import { cleanHintUrl, isHttpUrl, looksLikeSitemapUrl, MAX_PAGE_LINKS } from './url.js';
 import { MAX_HTTP_LAST_MODIFIED_CHARS, MAX_URL_CHARS } from './sitemap-limits.js';
 import type { RobotsInfo } from './types.js';
@@ -47,11 +47,14 @@ export interface DiscoveryOptions {
   deadline?: number; now?: () => number;
   /** Aborted when the scan is superseded: no further sniff starts and the ones in flight are cancelled. */
   signal?: AbortSignal | undefined;
+  /** Passed to every sniff. */
+  transport?: Transport | undefined;
   tabUrl?: string | undefined; pageLinks?: readonly string[] | undefined;
 }
 
 export async function discoverSitemaps(origin: string, robots: RobotsInfo | null, deps: DiscoveryDeps = { sniff: sniffSitemap }, opts: DiscoveryOptions = {}): Promise<DiscoveryResult> {
-  const { deadline = Infinity, now = Date.now, tabUrl, pageLinks = [], signal } = opts;
+  const { deadline = Infinity, now = Date.now, tabUrl, pageLinks = [], signal, transport } = opts;
+  const sniffOpts: FetchOptions = { ...(signal ? { signal } : {}), ...(transport ? { transport } : {}) };
   const robotsUrls = robots?.sitemapUrls ?? [];
   const robotsListed = new Set(robotsUrls);
   // One sniff per URL, first source wins: the tab, robots.txt, the page's links, then the common paths.
@@ -69,7 +72,7 @@ export async function discoverSitemaps(origin: string, robots: RobotsInfo | null
   const limit = pLimit(6);
   const sniffed = await Promise.all(candidates.map((c) => limit(async (): Promise<{ c: typeof c; r: SniffResult | null }> => {
     if (now() > deadline || signal?.aborted === true) return { c, r: null };
-    try { return { c, r: await (signal ? deps.sniff(c.url, { signal }) : deps.sniff(c.url)) }; } catch { return { c, r: { sniff: 'network-error' } }; }
+    try { return { c, r: await (signal || transport ? deps.sniff(c.url, sniffOpts) : deps.sniff(c.url)) }; } catch { return { c, r: { sniff: 'network-error' } }; }
   })));
   const found: Discovered[] = [];
   const failedRobots: DiscoveryResult['failedRobots'] = [];
