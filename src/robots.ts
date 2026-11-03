@@ -128,7 +128,7 @@ export async function fetchRobots(origin: string, opts: { signal?: AbortSignal |
 }
 
 const MAX_MATCH_PATH = 8192;                    // longer paths are not checked (over-limit)
-export const MATCH_STEP_BUDGET = 300_000_000;   // steps per meter, then over-limit: about 0.7-1.8 s of work in all (measured 2.3-6 ms per million), which robots-verdicts.ts splits into slices of at most ~10M steps (~25-60 ms)
+export const MATCH_STEP_BUDGET = 300_000_000;   // steps per meter, then over-limit: about 0.7-1.8 s of work in all (measured 2.3-6 ms per million); a caller can spread that over several meters or calls to keep each slice short
 const RULE_STEP_COST = 4;                       // steps charged for examining one rule, whatever it compares
 const SKIP_STEP_COST = 1;                       // steps charged for a rule the length / character prefilter rules out
 const CALL_STEP_COST = 64;                      // steps charged for one match call on top of its path length
@@ -369,7 +369,7 @@ function ruleMatches(r: CompiledRule, tables: Int32Array, s: string, m: MatchMet
   return findPart(r.last, tables, s, pos, s.length, m) >= 0;
 }
 
-type RobotsVerdict = { kind: 'allowed'; rule?: RobotsRule } | { kind: 'blocked'; rule: RobotsRule } | { kind: 'over-limit' };
+export type RobotsVerdict = { kind: 'allowed'; rule?: RobotsRule } | { kind: 'blocked'; rule: RobotsRule } | { kind: 'over-limit' };
 
 /**
  * Whether the crawler may fetch a path (a robotsPathOf result). The deciding rule comes back with the verdict; no

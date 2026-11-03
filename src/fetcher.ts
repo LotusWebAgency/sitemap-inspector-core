@@ -87,6 +87,13 @@ export interface FetchOptions {
 
 /** `finalUrl` and `redirected` travel beside the Response because a proxied Response cannot carry them. */
 export interface TransportResponse { res: Response; finalUrl: string; redirected: boolean }
+/**
+ * How one request reaches the network. Contract:
+ * - Honor `init.signal`: the idle and total timeouts work by aborting it, so a transport that ignores it can hang a fetch.
+ * - `res` carries the upstream status and headers.
+ * - The body is the bytes after HTTP content-coding is removed: a raw `.gz` file stays gzip (the engine unzips it), while br and zstd must already be decoded.
+ * - `finalUrl` is a non-empty absolute URL; an empty one is replaced by the requested URL.
+ */
 export type Transport = (url: string, init: RequestInit) => Promise<TransportResponse>;
 
 // Every request goes to the server and nothing is kept: the HTTP cache would serve a repeated run the copy it read before (up to max-age, and
@@ -118,6 +125,7 @@ export async function fetchTextStream(url: string, opts: FetchOptions = {}): Pro
   const range = opts.probe?.range;
   try { ({ res, finalUrl, redirected } = await (opts.transport ?? defaultTransport)(url, { signal: ctrl.signal, ...(range === undefined ? {} : { headers: { Range: range } }) })); }
   catch (e) { release(); throw e; }
+  finalUrl ||= url;
   const meta = {
     status: res.status, finalUrl, redirected,
     lastModified: res.headers.get('last-modified') ?? undefined,

@@ -57,6 +57,13 @@ Use `discoverSitemaps(origin, robots)` to find a site's sitemaps first, and `sni
 
 Every network request goes through a `Transport`: `(url, init) => Promise<{ res, finalUrl, redirected }>`. The default, `defaultTransport`, is a plain `fetch` that sends no credentials and bypasses the HTTP cache. Pass your own through the `transport` option of `fetchTextStream`, `sniffSitemap`, `fetchRobots` and `discoverSitemaps` to route requests through a proxy or add headers. `finalUrl` and `redirected` are returned beside the `Response` because a proxied response cannot carry them.
 
+A custom transport must keep to this contract:
+
+- Honor `init.signal`. The timeouts work by aborting it, so a transport that ignores it can hang a fetch.
+- `res` carries the upstream status and headers.
+- The body is the bytes after HTTP content-coding is removed. A raw `.gz` file stays gzip and the engine unzips it; br and zstd must already be decoded.
+- `finalUrl` is a non-empty absolute URL. An empty one is replaced by the requested URL.
+
 ```ts
 import { type Transport, fetchRobots } from '@lotuswebagency/sitemap-core';
 
@@ -69,7 +76,9 @@ const robots = await fetchRobots('https://example.com', { transport: viaProxy })
 
 ## Entry points
 
-The package root exports the stable API: `SitemapParser`, `ValidationRun`, `MSG`, `discoverSitemaps`, `COMMON_PATHS`, `fetchRobots`, `parseRobots`, `parseRobotsGroups`, `compileRobots`, `matchRobots`, `fetchTextStream`, `sniffSitemap`, `defaultTransport`, `mediaType`, and their types. Other modules are reachable as subpaths, for example `@lotuswebagency/sitemap-core/validator`, and are less stable.
+The package root exports the stable API: `SitemapParser`, `ValidationRun`, `MSG`, `discoverSitemaps`, `COMMON_PATHS`, `fetchRobots`, `parseRobots`, `parseRobotsGroups`, `compileRobots`, `matchRobots`, `robotsPathOf`, `fetchTextStream`, `sniffSitemap`, `defaultTransport`, `mediaType`, `NotUtf8Error`, and the types `Transport`, `TransportResponse`, `FetchOptions`, `TextStreamResult`, `SniffResult`, `Discovered`, `DiscoveryResult`, `DiscoveryOptions`, `ParseResult`, `ParseLimits`, `ParseCallbacks`, `IndexChild`, `ValidationContext`, `RuleId`, `CompiledRobots`, `MatchMeter`, `RobotsVerdict`, plus the shared types. Other modules are reachable as subpaths, for example `@lotuswebagency/sitemap-core/validator`, and are less stable.
+
+`matchRobots(compiled, path, meter)` takes the path and query that `robotsPathOf(url, origin)` returns, not `URL.pathname`: rules such as `Disallow: /*?id=` match the query too. `robotsPathOf` returns `null` for a URL on another origin or a non-http(s) URL.
 
 ## Validation rules
 

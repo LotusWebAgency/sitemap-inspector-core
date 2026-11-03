@@ -9,3 +9,5 @@ First public release.
 - Sitemap discovery from robots.txt, page hints and common paths.
 - robots.txt fetching, parsing and matching.
 - Pluggable `Transport` for every network request.
+- Root exports include `robotsPathOf`, `NotUtf8Error` and the option, result and callback types; `./package.json` is exported.
+- Documented `Transport` contract: it must honor `init.signal`, return a body with HTTP content-coding removed, and an empty `finalUrl` falls back to the requested URL.

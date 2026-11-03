@@ -21,6 +21,15 @@ describe('transport', () => {
     await r.stream?.cancel();
   });
 
+  it('an empty finalUrl falls back to the requested URL', async () => {
+    const transport = stub(xml, { finalUrl: '' });
+    const r = await fetchTextStream('https://example.com/a.xml', { transport });
+    expect(r.finalUrl).toBe('https://example.com/a.xml');
+    await r.stream?.cancel();
+    const failed = await fetchTextStream('https://example.com/b.xml', { transport: stub(() => xml(503), { finalUrl: '' }) });
+    expect(failed.finalUrl).toBe('https://example.com/b.xml');
+  });
+
   it('probe range reaches the transport', async () => {
     const transport = stub(xml);
     const r = await fetchTextStream('https://example.com/a.xml', { transport, probe: { range: 'bytes=0-2047' } });
