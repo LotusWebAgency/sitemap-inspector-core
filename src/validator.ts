@@ -37,8 +37,8 @@ const capExample = (ex: FindingExample): FindingExample => {
 };
 const SEV_ORDER: Record<Severity, number> = { error: 0, warning: 1, info: 2 };
 const stripWww = (h: string) => h.replace(/^www\./, '');
-// English rule texts, stored as Finding.message: the fallback when the UI has no rule.<id> text.
-// locales/en.ts repeats them verbatim (locales/en.test.ts checks that).
+// English rule texts, reported as Finding.message. Callers that localize findings key their own text by rule id and can
+// fall back to these.
 export const MSG = {
   'xml-parse-error': ['error', 'XML syntax errors'],
   'invalid-root': ['error', 'Root element is not <urlset> or <sitemapindex>'],
@@ -115,7 +115,7 @@ const outsidePathMessage = (url: string, dir: string): string => `${url} is outs
 export class ValidationRun {
   private findings = new Map<string, Finding>();
   private host: string; private scheme: string; // the sitemap's own scheme and host:port (www and a non-default port count)
-  private originScheme = ''; private originHost = ''; private originHasWww = false; // the site origin the scan started from
+  private originScheme = ''; private originHost = ''; private originHasWww = false; // the site origin the run started from
   private dir: string | null; // the directory the sitemap's URLs must stay in; null when the rule does not apply
   private rowFlags = 0; // bits of the record recordBatch is on; hit() collects them
   private withAlternates = 0; private withoutAlternates = 0;
@@ -205,7 +205,7 @@ export class ValidationRun {
 
   private recordWarnings(r: UrlRecord, u: URL | null, site: URL | null, crossHost: boolean): void {
     // A URL that already failed the sitemap's own scheme/host/port check is reported once, as cross-host. What is left
-    // is a sitemap that sits on another variant than the site origin the scan started from (say it redirected from
+    // is a sitemap that sits on another variant than the site origin the run started from (say it redirected from
     // example.com to www.example.com): its own URLs then mix with that origin.
     if (site && !crossHost && (site.protocol === 'http:' || site.protocol === 'https:') && stripWww(site.hostname) === this.originHost) {
       if (site.protocol !== this.originScheme || site.hostname.startsWith('www.') !== this.originHasWww) this.hit('protocol-www-mix', { value: r.loc, line: r.line });
@@ -232,16 +232,16 @@ export class ValidationRun {
     this.hit('robots-unverified', { ...uncheckedExample(code, r.loc), line: r.line });
   }
 
-  // Googlebot's verdict for one <loc> (spec §5.4). URLs on another origin, URLs when robots.txt answered 5xx / 429 or
+  // Googlebot's verdict for one <loc>. URLs on another origin, URLs when robots.txt answered 5xx / 429 or
   // failed, URLs past the matcher's limits and every URL when robots.txt is capped are counted as not checked, never as blocked. Legacy robots data
-  // (stored before the robots.txt rules were kept) gives no robots finding at all; a 4xx robots.txt blocks nothing.
+  // (a RobotsInfo without status or groups) gives no robots finding at all; a 4xx robots.txt blocks nothing.
   private checkRobots(r: UrlRecord, u: URL): void {
     if (this.robots === 'legacy') return;
     const path = robotsPathOf(u, this.ctx.origin);
     if (path === null) { this.robotsUnverified('robots-other-origin', r); return; }
     if (this.robots === 'unverified') { this.robotsUnverified('robots-unreachable', r); return; }
     // a capped robots.txt lost groups or rules, so any verdict may rest on an incomplete rule set, an "allowed" one
-    // as much as a "blocked" one: not checked, never blocked (the viewer's verdicts follow the same rule)
+    // as much as a "blocked" one: not checked, never blocked
     if (this.ctx.robots?.capped === true) { this.robotsUnverified('robots-check-limit', r); return; }
     if (!this.googlebot) return;
     const v = matchRobots(this.googlebot, path, this.robotsMeter);
@@ -310,6 +310,6 @@ export class ValidationRun {
     const withoutXDefault = parse.stats.clustersWithoutXDefault;
     if (withoutXDefault !== undefined) {
       if (withoutXDefault > 0) this.hit('no-xdefault').count = withoutXDefault; // decided per hreflang cluster
-    } else if (parse.stats.clusterCount > 0 && !parse.stats.languages.some((l) => l.toLowerCase() === 'x-default')) this.hit('no-xdefault'); // stats stored before the per-cluster count
+    } else if (parse.stats.clusterCount > 0 && !parse.stats.languages.some((l) => l.toLowerCase() === 'x-default')) this.hit('no-xdefault'); // stats without the per-cluster count (older shape)
   }
 }

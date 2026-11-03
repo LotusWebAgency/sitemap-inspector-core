@@ -1,6 +1,6 @@
 # @lotuswebagency/sitemap-core
 
-The sitemap engine behind [XML Sitemap Inspector](https://chromewebstore.google.com/detail/xml-sitemap-inspector/pdcmgglonolfboajejddacmijnhgbplp), a Chrome extension by [Lotus Web Agency](https://lotuswebagency.com/extensions/). It finds, fetches, parses and validates XML sitemaps and robots.txt files as streams, with bounded memory. It needs no DOM and no browser APIs, only `fetch` and web streams, so it runs in Node, workers and browsers.
+The sitemap engine behind [XML Sitemap Inspector](https://chromewebstore.google.com/detail/xml-sitemap-inspector/pdcmgglonolfboajejddacmijnhgbplp), a Chrome extension by [Lotus Web Agency](https://lotuswebagency.com/extensions/). It finds, fetches, parses and validates XML sitemaps and robots.txt files as streams, with bounded memory. It needs no DOM and no browser APIs, only `fetch`, web streams, `DecompressionStream` and `TextDecoderStream`, so it runs in Node, workers and browsers.
 
 The extension is described at <https://lotuswebagency.com/extensions/xml-sitemap-inspector/>. More of our extensions are listed at <https://lotuswebagency.com/extensions/>.
 
@@ -9,9 +9,9 @@ The extension is described at <https://lotuswebagency.com/extensions/xml-sitemap
 - Sitemap parsing: a streaming tokenizer and parser for `urlset` and `sitemapindex` documents, including gzip and the image, video, news, mobile and hreflang extensions.
 - Discovery: finding a site's sitemaps from robots.txt, page hints and common paths.
 - robots.txt: fetching, `Sitemap:` lines, rule groups, and a matcher for allow/disallow verdicts.
-- Validation rules: the rule set listed below, with its tests and fixtures.
+- Validation rules: the rule set listed below.
 
-Not included: the extension UI and viewer, scan orchestration, storage, the web app and the fetch proxy.
+Not included: the extension's user interface, scan orchestration, storage and hosted services. The repository has tests and fixtures; the published package ships compiled code only.
 
 ## Install
 
@@ -19,14 +19,14 @@ Not included: the extension UI and viewer, scan orchestration, storage, the web 
 npm install @lotuswebagency/sitemap-core
 ```
 
-Requires Node `^22.13.0 || ^24.0.0 || >=26.0.0`, or any runtime with `fetch` and web streams. The package is ESM only.
+Requires Node `^22.13.0 || ^24.0.0 || >=26.0.0`, or any runtime with `fetch`, web streams, `DecompressionStream` and `TextDecoderStream`. The package is ESM only.
 
 ## Example
 
 Fetch, parse and validate one sitemap:
 
 ```ts
-import { SitemapParser, ValidationRun, fetchRobots, fetchTextStream } from '@lotuswebagency/sitemap-core';
+import { SitemapParser, ValidationRun, fetchRobots, fetchTextStream, mediaType } from '@lotuswebagency/sitemap-core';
 
 const sitemapUrl = 'https://example.com/sitemap.xml';
 const origin = new URL(sitemapUrl).origin;
@@ -36,7 +36,7 @@ if (!res.ok || !res.stream) throw new Error(`HTTP ${res.status}`);
 
 const run = new ValidationRun({
   origin, sitemapUrl, robots, now: Date.now(),
-  finalUrl: res.finalUrl, redirected: res.redirected, httpLastModified: res.lastModified, contentType: res.contentType,
+  finalUrl: res.finalUrl, redirected: res.redirected, httpLastModified: res.lastModified, contentType: mediaType(res.contentType),
 });
 const parser = new SitemapParser({ onRecords: (records, ext) => { run.recordBatch(records, ext); } });
 for await (const chunk of res.stream) {
@@ -49,7 +49,9 @@ for (const f of findings) console.log(f.severity, f.ruleId, f.count, f.message);
 
 `fetchTextStream` decompresses gzip and decodes UTF-8 as it reads. `SitemapParser` takes optional limits (`maxBytes`, `maxUrls`) as its third argument and stops accepting input once one is hit; `overLimit` tells the caller to stop reading.
 
-Use `discoverSitemaps(origin, robots)` to find a site's sitemaps first, and `sniffSitemap(url)` to check one URL with a small ranged request.
+`ValidationContext.contentType` expects the lowercased media type, so pass the raw header through `mediaType`.
+
+Use `discoverSitemaps(origin, robots)` to find a site's sitemaps first, and `sniffSitemap(url)` to check one URL with a small ranged request. Both take a `transport` option too: `discoverSitemaps(origin, robots, undefined, { transport })`.
 
 ## Transport
 
@@ -67,7 +69,7 @@ const robots = await fetchRobots('https://example.com', { transport: viaProxy })
 
 ## Entry points
 
-The package root exports the stable API: `SitemapParser`, `ValidationRun`, `MSG`, `discoverSitemaps`, `COMMON_PATHS`, `fetchRobots`, `parseRobots`, `parseRobotsGroups`, `compileRobots`, `matchRobots`, `fetchTextStream`, `sniffSitemap`, `defaultTransport`, and their types. Other modules are reachable as subpaths, for example `@lotuswebagency/sitemap-core/validator`, and are less stable.
+The package root exports the stable API: `SitemapParser`, `ValidationRun`, `MSG`, `discoverSitemaps`, `COMMON_PATHS`, `fetchRobots`, `parseRobots`, `parseRobotsGroups`, `compileRobots`, `matchRobots`, `fetchTextStream`, `sniffSitemap`, `defaultTransport`, `mediaType`, and their types. Other modules are reachable as subpaths, for example `@lotuswebagency/sitemap-core/validator`, and are less stable.
 
 ## Validation rules
 
@@ -89,7 +91,7 @@ The package root exports the stable API: `SitemapParser`, `ValidationRun`, `MSG`
 | `invalid-changefreq` | error | Invalid \<changefreq> values |
 | `invalid-priority` | error | \<priority> values outside 0.0–1.0 |
 | `invalid-child-loc` | error | Index entries with invalid \<loc> |
-| `unescaped-ampersand` | error | Unescaped & characters (write them as &amp;) |
+| `unescaped-ampersand` | error | Unescaped & characters (write them as `&amp;`) |
 | `parse-truncated` | error | Parsing stopped at the hard limit of 150,000 URLs or 150 MB; results are partial |
 | `image-too-many` | error | URLs with more than 1,000 images |
 | `news-too-many` | error | More than 1,000 news entries in one sitemap |

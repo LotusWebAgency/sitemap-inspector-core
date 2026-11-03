@@ -152,7 +152,7 @@ const BLOCKS = new Map<string, BlockSpec>([
   [VIDEO_NS, { element: 'video', fields: VIDEO_FIELDS, check: checkVideo }],
 ]);
 
-/** "1,001 <image:image> elements (limit 1,000)": the English example value, plus code and params for the UI. */
+/** "1,001 <image:image> elements (limit 1,000)": the English example value, plus code and params for localizing it. */
 export function tooManyExample(field: string, count: number, max: number): { value: string; code: ExampleCode; params: Params } {
   return {
     value: `${count.toLocaleString('en-US')} <${field}> elements (limit ${max.toLocaleString('en-US')})`,

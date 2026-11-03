@@ -8,7 +8,7 @@ import { hash53 } from './hash53.js';
 import type { Alternate, ExampleCode, Params, SitemapKind, SitemapStats, UrlRecord } from './types.js';
 
 export interface IndexChild { loc: string; lastmod?: string | undefined; line: number }
-// message is the English text (stored as the example value); detail + params let the UI translate it.
+// message is the English text (stored as the example value); detail + params let callers localize it.
 // code picks the finding: the first four map to the xml-parse-error, invalid-root, missing-namespace and missing-loc rules,
 // every other code is its own rule id (each has its own per-code cap on stored issues).
 export interface StructuralIssue {
@@ -42,7 +42,7 @@ const FIELD_BIT = { loc: 1, lastmod: 2, changefreq: 4, priority: 8 } as const;
 const MAX_TEXT_LINE = 4096; // a text-sitemap line is kept this far; anything longer fails the 2,048-character check anyway
 const SNIFF_CHARS = 8;
 const MAX_SNIFF_BLANK = 65536;
-// An index keeps this many children: the scan follows at most 1,000 (MAX_CHILDREN_PER_INDEX) and stops at 2,000 sitemaps.
+// An index keeps this many children; the rest are only counted (a sitemap index may list up to 50,000).
 const MAX_KEPT_CHILDREN = 4000;
 const MAX_CHILD_LOC = 2049; // one past the 2,048-character limit, so a loc that is too long still shows (a copy: a slice would keep its whole source alive)
 const HTTP_START = /^https?:\/\//i;

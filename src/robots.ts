@@ -82,9 +82,9 @@ export function parseRobotsGroups(text: string): { groups: RobotsGroup[]; capped
 }
 
 /**
- * How a scan may use its robots.txt (spec §5.4): 2xx → its rules; other statuses below 500 except 429 → nothing is
- * blocked; 5xx, 429 or a failed fetch (null) → unverified, never blocked. Data stored before the robots.txt rules were kept has no status (or no
- * groups) and is legacy: no robots findings at all.
+ * How a validation run may use its robots.txt: 2xx → its rules; other statuses below 500 except 429 → nothing is
+ * blocked; 5xx, 429 or a failed fetch (null) → unverified, never blocked. A RobotsInfo without a status (or without
+ * groups) is legacy data from an older shape: no robots findings at all.
  */
 export type RobotsMode = 'rules' | 'allow-all' | 'unverified' | 'legacy';
 
@@ -95,7 +95,7 @@ export function robotsMode(robots: RobotsInfo | null): RobotsMode {
   return robots.status === 429 || robots.status >= 500 ? 'unverified' : 'allow-all';
 }
 
-/** signal: the scan's, so a superseded or timed-out scan stops reading robots.txt; the fetch itself is capped at 15 s idle and 30 s in all. */
+/** signal: the caller's, so a cancelled or timed-out run stops reading robots.txt; the fetch itself is capped at 15 s idle and 30 s in all. */
 export async function fetchRobots(origin: string, opts: { signal?: AbortSignal | undefined; transport?: Transport | undefined } = {}): Promise<RobotsInfo | null> {
   const url = `${origin}/robots.txt`;
   let text = '';
@@ -174,7 +174,7 @@ export function normalizeRobotsPath(s: string): string {
   return out;
 }
 
-/** The part of a URL that robots.txt rules match (path and query), or null when the URL is not http(s) on exactly this origin or one of its site aliases (Scan.siteAliases). */
+/** The part of a URL that robots.txt rules match (path and query), or null when the URL is not http(s) on exactly this origin or one of the given alias origins. */
 export function robotsPathOf(loc: string | URL, origin: string, aliases?: readonly string[]): string | null {
   let u: URL;
   try { u = typeof loc === 'string' ? new URL(loc) : loc; } catch { return null; }
@@ -207,8 +207,8 @@ interface CompiledRule {
 export interface CompiledRobots { byKey: Map<string, CompiledRule[]>; wild: CompiledRule[]; tables: Int32Array; overLimit: boolean }
 
 /**
- * A caller-owned work meter for matchRobots. One meter per pass: the scan uses one per sitemap entry, a viewer filter
- * pass creates a new one. Once steps pass MATCH_STEP_BUDGET every match on it answers over-limit.
+ * A caller-owned work meter for matchRobots. One meter per pass: a run uses one per sitemap file, and a caller
+ * filtering rows again starts a new one. Once steps pass MATCH_STEP_BUDGET every match on it answers over-limit.
  */
 export interface MatchMeter { steps: number }
 
@@ -304,7 +304,7 @@ function compile(rules: readonly RobotsRule[]): CompiledRobots {
   return { byKey, wild, tables, overLimit: false };
 }
 
-/** Compiles the rules for one crawler once per groups array (a scan's stored RobotsInfo.groups) and product token. */
+/** Compiles the rules for one crawler once per groups array (RobotsInfo.groups) and product token. */
 export function compileRobots(groups: readonly RobotsGroup[], agent: string): CompiledRobots {
   const token = productToken(agent);
   let perAgent = compiled.get(groups);
@@ -394,7 +394,7 @@ export function matchRobots(c: CompiledRobots, path: string, meter: MatchMeter):
   return { kind: 'allowed' };
 }
 
-// English example texts, stored as FindingExample.value; locales/en.ts example.<code> repeats them (locales/en.test.ts checks).
+// English example texts, reported as FindingExample.value; callers that localize findings can key their own text by code.
 const UNCHECKED = {
   'robots-other-origin': 'on another origin than robots.txt',
   'robots-unreachable': 'robots.txt could not be read',

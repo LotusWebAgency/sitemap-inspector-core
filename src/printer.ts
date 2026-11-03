@@ -1,13 +1,13 @@
 export type SpanKind = 'decl' | 'pi' | 'comment' | 'doctype' | 'cdata' | 'open' | 'self' | 'close' | 'text' | 'bad';
 
 export interface LayoutSink {
-  /** One consumed span of input, in document order. `more`: the construct continues in the next call (streamed DOCTYPE, discarded construct). Returns the 1-based XML-tab line the construct starts on (0 for a text run with no content yet). */
+  /** One consumed span of input, in document order. `more`: the construct continues in the next call (streamed DOCTYPE, discarded construct). Returns the 1-based output line the construct starts on (0 for a text run with no content yet). */
   span(kind: SpanKind, raw: string, more?: boolean): number;
   /** The last line started so far, 0 before any. */
   readonly line: number;
 }
 
-/** XML-tab rows are stored in pieces of at most this many characters, and a piece of exactly this length continues into the next row. */
+/** Output rows are held in pieces of at most this many characters, and a piece of exactly this length continues into the next row. */
 export const MAX_XML_LINE = 8192;
 /** A stored row of exactly MAX_XML_LINE characters is a piece that continues into the next row without a line break. */
 export const continuesRow = (row: string): boolean => row.length === MAX_XML_LINE;
@@ -45,7 +45,7 @@ function collapseTag(tag: string): string {
 }
 
 /**
- * The XML tab: lays the tokenizer's consumed spans out as indented rows, one construct per row, with a leaf element's
+ * Pretty-printer: lays the tokenizer's consumed spans out as indented rows, one construct per row, with a leaf element's
  * text and close tag joined to its open tag. Rows never hold a line break and are cut into MAX_XML_LINE pieces; every
  * buffer is bounded (row, held whitespace, batch of ROW_FLUSH rows), so memory does not grow with the input.
  */

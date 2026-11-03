@@ -10,7 +10,7 @@ export interface UrlRecord {
   priority?: string;
   alternates?: Alternate[];
   images?: number;           // count of <image:image> blocks; urls without images omit it
-  flags?: number;            // finding bits (row-flags.ts); omitted when none, and in scans stored before row flags existed
+  flags?: number;            // finding bits (row-flags.ts); omitted when none
   line: number;
 }
 
@@ -30,13 +30,13 @@ export type ExampleCode =
   | 'encoding-not-utf8' | 'duplicate-field' | 'wrong-entry-kind' | 'misplaced-element' | 'alternate-wrong-namespace'
   | 'extension-namespace-unknown' | 'sitemap-without-loc' | 'image-without-loc' | 'outside-sitemap-path';
 
-// value stays the English text (or the raw URL/value), so scans stored before codes still render.
+// value is the English text (or the raw URL/value), so a finding renders without a code lookup; code and params let callers localize it.
 export interface FindingExample { value: string; line?: number; code?: ExampleCode; params?: Params }
 
 export interface Finding {
-  ruleId: string;            // the UI renders rule.<ruleId> with params, falling back to message
+  ruleId: string;            // stable rule id; localize with params, or fall back to message
   severity: Severity;
-  message: string;           // English text at scan time
+  message: string;           // English text
   params?: Params;
   count: number;
   examples: FindingExample[]; // capped at 5
@@ -54,9 +54,9 @@ export interface SitemapStats {
   hasPriority: boolean;
   hasChangefreq: boolean;
   imageCount: number;        // total <image:image> blocks across the sitemap
-  newsCount?: number;        // <news:news> blocks; absent in scans stored before the news and video checks existed
-  videoCount?: number;       // <video:video> blocks; absent in scans stored before the news and video checks existed
-  clustersWithoutXDefault?: number; // hreflang clusters with no x-default entry; absent in scans stored before then
+  newsCount?: number;        // <news:news> blocks; absent in older result data
+  videoCount?: number;       // <video:video> blocks; absent in older result data
+  clustersWithoutXDefault?: number; // hreflang clusters with no x-default entry; absent in older result data
 }
 
 /** One Allow / Disallow line of a robots.txt group (robots.ts). */
@@ -73,11 +73,11 @@ export interface RobotsInfo {
   found: boolean;
   url: string;
   sitemapUrls: string[];
-  status?: number;           // HTTP status of the robots.txt fetch; absent in scans stored before the robots.txt rules were kept
-  groups?: RobotsGroup[];    // crawler access rules, present when found; absent in scans stored before the robots.txt rules were kept
+  status?: number;           // HTTP status of the robots.txt fetch; absent in older result data
+  groups?: RobotsGroup[];    // crawler access rules, present when found; absent in older result data
   capped?: boolean;          // groups, rules or lines past the caps (500 / 5,000 / 2,048-char path / 512 KiB read) were dropped, so every verdict for that robots.txt is reported as robots-unverified, never blocked or allowed
 }
 
 
-/** Values for a message's {placeholders}; numbers are formatted in the UI language. */
+/** Values for a message's {placeholders}; numbers are formatted in the caller's language. */
 export type Params = Record<string, string | number>;

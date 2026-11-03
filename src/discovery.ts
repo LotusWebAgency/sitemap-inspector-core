@@ -3,7 +3,7 @@ import { cleanHintUrl, isHttpUrl, looksLikeSitemapUrl, MAX_PAGE_LINKS } from './
 import { MAX_HTTP_LAST_MODIFIED_CHARS, MAX_URL_CHARS } from './sitemap-limits.js';
 import type { RobotsInfo } from './types.js';
 
-// Most common first (spec §4.1): WordPress/Yoast/Rank Math, SEOPress, Astro/Gatsby/next-sitemap, Magento,
+// Most common first: WordPress/Yoast/Rank Math, SEOPress, Astro/Gatsby/next-sitemap, Magento,
 // BigCommerce, PrestaShop, Zendesk, TYPO3 (page type), news/video/image names, Blogger.
 export const COMMON_PATHS = [
   '/sitemap.xml', '/sitemap_index.xml', '/sitemap-index.xml',
@@ -45,7 +45,7 @@ export interface DiscoveryDeps { sniff: typeof sniffSitemap }
 // tabUrl and pageLinks are hints from the page being inspected (the caller validates them first); both are optional.
 export interface DiscoveryOptions {
   deadline?: number; now?: () => number;
-  /** Aborted when the scan is superseded: no further sniff starts and the ones in flight are cancelled. */
+  /** Aborted when the caller cancels: no further sniff starts and the ones in flight are cancelled. */
   signal?: AbortSignal | undefined;
   /** Passed to every sniff. */
   transport?: Transport | undefined;

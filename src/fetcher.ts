@@ -77,7 +77,7 @@ export interface FetchOptions {
   timeoutMs?: number;
   /** Longest the whole fetch may take, headers and body together (default 120 s): a server that drips bytes keeps the idle timeout from ever firing. */
   totalMs?: number;
-  /** Aborts the request and the body read, e.g. when the scan is superseded. */
+  /** Aborts the request and the body read, e.g. when the caller no longer needs the result. */
   signal?: AbortSignal | undefined;
   /** A size check: the result carries the headers that tell the file size, and `range` (e.g. "bytes=0-2047") is sent as the Range header. */
   probe?: { range?: string };
@@ -89,8 +89,8 @@ export interface FetchOptions {
 export interface TransportResponse { res: Response; finalUrl: string; redirected: boolean }
 export type Transport = (url: string, init: RequestInit) => Promise<TransportResponse>;
 
-// Every request goes to the server and nothing is kept: the HTTP cache would serve a re-scan the copy it read before (up to max-age, and
-// a cached copy may differ from what the page itself saw), and browsers answer a Range from a cached compressed body with ranges of the encoded bytes.
+// Every request goes to the server and nothing is kept: the HTTP cache would serve a repeated run the copy it read before (up to max-age, and
+// a cached copy may differ from what a browser loading the page saw), and browsers answer a Range from a cached compressed body with ranges of the encoded bytes.
 const NETWORK_ONLY = { credentials: 'omit', redirect: 'follow', cache: 'no-store' } as const satisfies RequestInit;
 
 export const defaultTransport: Transport = async (url, init) => {

@@ -43,7 +43,7 @@ export function looksLikeSitemapUrl(u: string): boolean {
   }
 }
 
-// A sitemap URL as a scan stores it (index child, robots.txt line, manual add): http(s) only, no fragment and no
+// A sitemap URL in normalized form (index child, robots.txt line, user-supplied): http(s) only, no fragment and no
 // userinfo, null otherwise.
 export function normalizeSitemapUrl(u: string): string | null {
   if (!isHttpUrl(u)) return null;
@@ -58,7 +58,7 @@ export function normalizeSitemapUrl(u: string): string | null {
   }
 }
 
-/** The URL on the scan origin (same path, query and fragment) when u sits on one of the scan's site aliases, else u itself. */
+/** The URL on the site origin (same path, query and fragment) when u sits on one of the given alias origins, else u itself. */
 export function aliasSiteUrl(u: URL, scanOrigin: string, aliases: readonly string[] | undefined): URL {
   if (aliases === undefined || aliases.length === 0 || u.origin === scanOrigin || !aliases.includes(u.origin)) return u;
   try { return new URL(scanOrigin + u.href.slice(u.origin.length)); } catch { return u; }
