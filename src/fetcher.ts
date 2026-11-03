@@ -90,7 +90,7 @@ export interface TransportResponse { res: Response; finalUrl: string; redirected
 export type Transport = (url: string, init: RequestInit) => Promise<TransportResponse>;
 
 // Every request goes to the server and nothing is kept: the HTTP cache would serve a re-scan the copy it read before (up to max-age, and
-// the extension's cache is not the tab's), and Chrome answers a Range from a cached compressed body with ranges of the encoded bytes.
+// a cached copy may differ from what the page itself saw), and browsers answer a Range from a cached compressed body with ranges of the encoded bytes.
 const NETWORK_ONLY = { credentials: 'omit', redirect: 'follow', cache: 'no-store' } as const satisfies RequestInit;
 
 export const defaultTransport: Transport = async (url, init) => {

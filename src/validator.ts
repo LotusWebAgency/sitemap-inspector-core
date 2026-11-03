@@ -12,9 +12,9 @@ import type { Finding, FindingExample, Params, RobotsInfo, Severity, UrlRecord }
 export interface ValidationContext {
   origin: string; sitemapUrl: string; finalUrl: string; redirected: boolean;
   httpLastModified?: string | undefined; robots: RobotsInfo | null; now: number;
-  contentType?: string | undefined;  // lowercased media type of the response (core/fetcher.ts mediaType)
+  contentType?: string | undefined;  // lowercased media type of the response (./fetcher.ts mediaType)
   viaIndex?: boolean;  // reached through a parent sitemapindex — robots.txt only has to list the chain root
-  siteAliases?: readonly string[] | undefined;  // Scan.siteAliases: a loc on one of these origins counts as the site's own (same path and query on `origin`)
+  siteAliases?: readonly string[] | undefined;  // a loc on one of these origins counts as the site's own (same path and query on `origin`)
 }
 
 // xsd:decimal ("1.", "+0.5", "-0" and ".5" included); the length cap only guards against abuse
@@ -94,8 +94,8 @@ export const MSG = {
   'outside-sitemap-path': ['warning', "URLs outside the sitemap's directory"],
 } as const satisfies Record<string, [Severity, string]>;
 export type RuleId = keyof typeof MSG;
-// Rules hit once per <url> by recordBatch. Error and warning ones need a bit in core/row-flags.ts ROW_FLAG_RULES
-// (core/row-flags.test.ts enforces it); add a new per-URL rule here.
+// Rules hit once per <url> by recordBatch. Error and warning ones need a bit in ./row-flags.ts ROW_FLAG_RULES
+// (./row-flags.test.ts enforces it); add a new per-URL rule here.
 export const PER_URL_RULES: ReadonlySet<RuleId> = new Set<RuleId>([
   'invalid-loc', 'invalid-utf8', 'loc-too-long', 'cross-host', 'invalid-lastmod', 'invalid-changefreq', 'invalid-priority',
   'future-lastmod', 'protocol-www-mix', 'tracking-params', 'invalid-hreflang', 'hreflang-missing-self', 'image-too-many',
@@ -107,7 +107,7 @@ export const PER_URL_RULES: ReadonlySet<RuleId> = new Set<RuleId>([
 // What servers send for sitemap files (XML, gzip, generic binary or text). Search engines document no required type.
 const SITEMAP_TYPES = new Set(['application/xml', 'text/xml', 'application/gzip', 'application/x-gzip', 'application/octet-stream', 'binary/octet-stream', 'application/x-gzip-compressed', 'text/plain']);
 const XML_SUBTYPE = /^application\/[\w.+-]+\+xml$/; // input is a mediaType() value, ≤ 100 chars
-const GOOGLEBOT = 'Googlebot'; // robots-blocked is reported for this crawler (spec §5.4); the viewer evaluates others
+const GOOGLEBOT = 'Googlebot'; // robots-blocked is reported for this crawler; callers can evaluate other crawlers with compileRobots
 
 const entryCount = (parse: ParseResult): number => (parse.kind === 'sitemapindex' ? parse.children.length + (parse.childOverflow ?? 0) : parse.stats.urlCount);
 const outsidePathMessage = (url: string, dir: string): string => `${url} is outside the sitemap's directory (${dir}); it only counts if the sitemap is listed in robots.txt or submitted in Search Console`;
@@ -121,7 +121,7 @@ export class ValidationRun {
   private withAlternates = 0; private withoutAlternates = 0;
   private missingAlternates: FindingExample[] = []; // first five URLs without alternates
   private robots: RobotsMode;
-  private googlebot: CompiledRobots | null = null; // shared and cached per stored RobotsInfo.groups (core/robots.ts)
+  private googlebot: CompiledRobots | null = null; // shared and cached per RobotsInfo.groups (./robots.ts)
   readonly robotsMeter: MatchMeter = { steps: 0 }; // this run's matcher work; a test sets it to simulate a spent budget
 
   constructor(private ctx: ValidationContext) {

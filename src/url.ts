@@ -1,5 +1,5 @@
-// A host with `*` parses (`new URL('https://*.bank.com/').origin` is `https://*.bank.com`) and a Grant button would
-// request that pattern as a host permission, so it is not a URL here.
+// A host with `*` parses (`new URL('https://*.bank.com/').origin` is `https://*.bank.com`) and a caller that turns the
+// origin into a host-permission pattern would request a wildcard host, so it is not a URL here.
 export function isHttpUrl(u: string): boolean {
   try {
     const { protocol, hostname } = new URL(u);
@@ -9,12 +9,12 @@ export function isHttpUrl(u: string): boolean {
   }
 }
 
-// Bounds for the hints a host page hands to a scan: the tab URL and the page's <link rel="sitemap"> hrefs.
+// Bounds for the hints a caller can pass to discovery: a page URL and the page's <link rel="sitemap"> hrefs.
 export const MAX_HINT_URL_CHARS = 2048;
 export const MAX_PAGE_LINKS = 20;
 
-// A hint URL as the extension keeps and fetches it: no fragment, and no userinfo (a `user:pass@` in a tab or page link
-// would otherwise be stored in the scan, and fetch() rejects such URLs anyway).
+// A hint URL as it is kept and fetched: no fragment, and no userinfo (a `user:pass@` in a page URL or link
+// would otherwise be retained in results, and fetch() rejects such URLs anyway).
 export function cleanHintUrl(u: string): string {
   try {
     const url = new URL(u);
@@ -27,7 +27,7 @@ export function cleanHintUrl(u: string): string {
   }
 }
 
-// The tab URL is fetched only when it looks like a sitemap: a GET of an arbitrary tab URL could consume a
+// The page URL is fetched only when it looks like a sitemap: a GET of an arbitrary page URL could consume a
 // single-use link (magic login, password reset). The path is read up to the first `;` (path parameters), and the
 // query counts only as the sole parameter, so a token URL can't qualify by carrying `next=sitemap.xml` along.
 export function looksLikeSitemapUrl(u: string): boolean {

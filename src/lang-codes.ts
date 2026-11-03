@@ -1,9 +1,9 @@
 import type { HreflangExampleCode, Params } from './types.js';
 
-// Code existence comes from the browser's ICU data: Intl.DisplayNames with fallback 'none' answers undefined for
-// an unknown code, so no ISO tables ship with the extension. Lookups need canonical case per subtag (region "us"
+// Code existence comes from the runtime's ICU data: Intl.DisplayNames with fallback 'none' answers undefined for
+// an unknown code, so no ISO tables ship with this package. Lookups need canonical case per subtag (region "us"
 // is unknown, "US" is not) and bare subtags only (type 'language' would also name a whole tag like "en-US").
-// Where ICU and ISO disagree, the rulings are pinned in core/lang-codes.test.ts.
+// Where ICU and ISO disagree, the rulings are pinned in ./lang-codes.test.ts.
 interface Names { language: Intl.DisplayNames; script: Intl.DisplayNames; region: Intl.DisplayNames }
 let names: Names | null | undefined;
 

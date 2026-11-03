@@ -42,7 +42,7 @@ export interface Discovered {
 export type FailedRobotsReason = Exclude<SniffKind, 'urlset' | 'sitemapindex'> | 'time-limit';
 export interface DiscoveryResult { found: Discovered[]; failedRobots: { url: string; reason: FailedRobotsReason; status?: number | undefined; encoding?: string | undefined }[] }
 export interface DiscoveryDeps { sniff: typeof sniffSitemap }
-// tabUrl and pageLinks come from the page in the tab (validated in background.ts); both are optional.
+// tabUrl and pageLinks are hints from the page being inspected (the caller validates them first); both are optional.
 export interface DiscoveryOptions {
   deadline?: number; now?: () => number;
   /** Aborted when the scan is superseded: no further sniff starts and the ones in flight are cancelled. */
@@ -57,7 +57,7 @@ export async function discoverSitemaps(origin: string, robots: RobotsInfo | null
   const sniffOpts: FetchOptions = { ...(signal ? { signal } : {}), ...(transport ? { transport } : {}) };
   const robotsUrls = robots?.sitemapUrls ?? [];
   const robotsListed = new Set(robotsUrls);
-  // One sniff per URL, first source wins: the tab, robots.txt, the page's links, then the common paths.
+  // One sniff per URL, first source wins: the page URL, robots.txt, the page's links, then the common paths.
   const candidates: { url: string; source: CandidateSource }[] = [];
   const queued = new Set<string>();
   const add = (url: string, source: CandidateSource): void => {

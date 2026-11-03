@@ -1,10 +1,10 @@
 import type { RuleId } from './validator.js';
 import type { Finding } from './types.js';
 
-// Bit i of UrlRecord.flags is set when ROW_FLAG_RULES[i] hit that URL. The bits are stored in IndexedDB chunks:
-// append only, never reorder, remove or reuse a position, or stored scans read wrong. Every per-URL rule of error
+// Bit i of UrlRecord.flags is set when ROW_FLAG_RULES[i] hit that URL. Callers may persist the bits:
+// append only, never reorder, remove or reuse a position, or stored flags read wrong. Every per-URL rule of error
 // or warning severity has a bit; info rules and sitemap-level rules have none. robots-blocked is Googlebot's verdict.
-// core/row-flags.test.ts checks that every per-URL error/warning rule in MSG has one.
+// ./row-flags.test.ts checks that every per-URL error/warning rule in MSG has one.
 // max 31 entries; flags is a 32-bit int (bit 31 would make it negative)
 export const ROW_FLAG_RULES = [
   'invalid-loc', 'cross-host', 'invalid-utf8', 'loc-too-long',

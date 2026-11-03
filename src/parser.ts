@@ -20,10 +20,10 @@ export interface StructuralIssue {
 // children holds the first MAX_KEPT_CHILDREN entries, their locs cut to MAX_CHILD_LOC characters; childOverflow counts the rest.
 export interface ParseResult { kind: SitemapKind; stats: SitemapStats; children: IndexChild[]; childOverflow?: number; issues: StructuralIssue[]; bareAmpersands: number; truncated: boolean; text?: boolean }
 // ext carries the extension hits of exactly these records, in record order; recordIx indexes into records. onLines gets the
-// XML-tab rows (core/printer.ts) in batches; every line number the parser reports is a row number there.
+// printed XML rows (./printer.ts) in batches; every line number the parser reports is a row number there.
 export interface ParseCallbacks { onRecords(records: UrlRecord[], ext: readonly ExtensionHit[]): void; onLines?: (lines: string[]) => void }
 // Hard stop well above the spec limits (50k URLs / 50MB): oversized-but-real sitemaps still get
-// fully analyzed and flagged, while a decompression bomb can't grow memory or IndexedDB unbounded.
+// fully analyzed and flagged, while a decompression bomb can't grow memory unbounded.
 export interface ParseLimits { maxBytes: number; maxUrls: number }
 const DEFAULT_LIMITS: ParseLimits = { maxBytes: 150 * 1024 * 1024, maxUrls: 150_000 };
 
@@ -162,7 +162,7 @@ export class SitemapParser {
   /** True once a hard limit is hit — the caller should stop feeding (and cancel) the stream. */
   get overLimit(): boolean { return this.truncated; }
 
-  /** XML-tab rows started so far (the count onLines would have delivered once finish() ran). */
+  /** XML rows started so far (the count onLines would have delivered once finish() ran). */
   get rowCount(): number { return this.printer.line; }
 
   /** The root element seen so far: 'unknown' until the root start tag has been read. */

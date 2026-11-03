@@ -24,7 +24,7 @@ export function duplicateKey(url: URL): string | null {
 }
 
 // The parser parses every <loc> once; the validator takes the result from here instead of parsing it again.
-// Keyed by record, so nothing is stored with the record itself (records go to IndexedDB).
+// Keyed by record, so nothing is stored with the record itself (records may be persisted by the caller).
 const parsedLocs = new WeakMap<object, URL | null>();
 
 export function rememberParsedLoc(record: object, url: URL | null): void {

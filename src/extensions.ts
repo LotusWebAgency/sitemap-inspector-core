@@ -42,7 +42,7 @@ export function unknownExtensionNamespace(prefix: string, uri: string): boolean 
 export const EXAMPLE_MAX = 300;
 export const capValue = (v: string): string => (v.length > EXAMPLE_MAX ? v.slice(0, EXAMPLE_MAX) + '…' : v);
 
-/** Extension rules found while parsing; core/validator.ts turns them into findings (texts in MSG). */
+/** Extension rules found while parsing; ./validator.ts turns them into findings (texts in MSG). */
 export type ExtRuleId =
   | 'image-deprecated-field' | 'mobile-obsolete'
   | 'news-missing-field' | 'news-invalid-language' | 'news-invalid-date' | 'news-too-old'
