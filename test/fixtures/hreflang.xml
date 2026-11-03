@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <url><loc>https://ml.example/en/p1</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://ml.example/en/p1"/>
+    <xhtml:link rel="alternate" hreflang="de" href="https://ml.example/de/p1"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://ml.example/en/p1"/>
+  </url>
+  <url><loc>https://ml.example/de/p1</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://ml.example/en/p1"/>
+    <xhtml:link rel="alternate" hreflang="de" href="https://ml.example/de/p1"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://ml.example/en/p1"/>
+  </url>
+  <url><loc>https://ml.example/en/p2</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://ml.example/en/p2"/>
+    <xhtml:link rel="alternate" hreflang="fr" href="https://ml.example/fr/p2"/>
+  </url>
+</urlset>

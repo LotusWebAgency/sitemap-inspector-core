@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset>
+  <url><lastmod>2026-01-01</lastmod></url>
+  <url><loc>https://b.example/ok</loc><priority>7</priority><changefreq>sometimes</changefreq></url>
+  <url><loc>relative/path</loc><lastmod>01.05.2026</lastmod></url>
+  <url><loc>https://b.example/dup</loc></url>
+  <url><loc>https://b.example/dup</loc></url>
+  <url><loc>https://other-host.example/x</loc></url>
+</urlset>
