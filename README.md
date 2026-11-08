@@ -74,6 +74,48 @@ const viaProxy: Transport = async (url, init) => {
 const robots = await fetchRobots('https://example.com', { transport: viaProxy });
 ```
 
+## Limits
+
+Every cap the engine applies. Sizes are counted after decompression; "characters" are UTF-16 code units of the decoded text.
+
+| Limit | Value | Behavior past it |
+| --- | --- | --- |
+| `maxBytes` (`ParseLimits`) | 157,286,400 bytes (150 MiB) of decoded UTF-8 | `overLimit` turns true after the chunk that crossed it; the rest is ignored and `truncated` is set |
+| `maxUrls` (`ParseLimits`) | 150,000 URLs, or index entries | Same as `maxBytes` |
+| Sitemap protocol: URLs | 50,000 per file | Reported as `too-many-urls`; parsing continues up to `maxUrls` |
+| Sitemap protocol: size | 50 MB (52,428,800 bytes) uncompressed | Reported as `file-too-large`; parsing continues up to `maxBytes` |
+| Hard stop reached | 150,000 URLs or 150 MB | Reported as `parse-truncated`; results are partial |
+| URL length | 2,048 characters | A `<loc>` of 2,048 or more is reported as `loc-too-long`; a longer sitemap location is not followed |
+| Element nesting | 64 levels | Deeper elements are counted but not tracked |
+| Tag, comment, processing instruction, declaration, DOCTYPE | 65,536 characters each | Reported as an error, discarded without buffering, parsing resumes after it |
+| CDATA section | 1,048,576 characters, `<![CDATA[` included | Same |
+| Accumulated text run | 65,536 characters | The first 65,536 are kept |
+| Text of one field (`<loc>`, `<lastmod>`, ...) | 8,192 characters | The first 8,192 are kept |
+| Extension field value (image, video, news) | 2,048 characters | The first 2,048 are kept |
+| Index children kept | 4,000 entries, each `<loc>` cut to 2,049 characters | The rest are counted in `childOverflow`, not kept |
+| Hreflang alternates per URL | 500 | The rest are dropped |
+| Distinct hreflang languages | 1,000 | |
+| Declared namespace prefixes | 100 | |
+| Structural issues kept per code | 20 | The rest are dropped |
+| robots.txt body | 524,288 characters | Cut at the last complete line |
+| robots.txt groups / rules / `Sitemap:` lines | 500 / 5,000 / 500 | The rest are ignored |
+| robots.txt rule path | 2,048 characters | The rule is ignored |
+| robots.txt matching | paths up to 8,192 characters; 300,000,000 steps per `MatchMeter` | The verdict is `over-limit` |
+| Page links used by discovery | 20 | |
+| Timeouts | 30 s idle and 120 s total for a sitemap; 15 s and 30 s for robots.txt and size probes | The request is aborted; override with `timeoutMs` and `totalMs` |
+
+The package never follows a sitemap index into its children. Walking an index, and how deep to go, is up to the caller.
+
+## Security model
+
+- All input is untrusted. Sitemaps, robots.txt and the responses to every probe are treated as hostile, and the parser keeps its own state bounded by the caps above whatever the document contains.
+- No DTD processing and no entity expansion beyond the five predefined entities (`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;`) and numeric character references. A `<!DOCTYPE>`, including its internal subset, is streamed past without being interpreted; external and internal entities are never defined, resolved or fetched, so there is no billion-laughs or XXE path.
+- Parsing is streaming. Memory depends on the caps, not on the file size: the tokenizer holds at most one unfinished construct (up to 1 MiB for CDATA), and records are handed to `onRecords` in batches.
+- gzip is decoded as a stream (`DecompressionStream`), only as fast as the consumer reads. The decoded size is counted against `maxBytes`, so a decompression bomb ends at the hard limit once the caller stops reading on `overLimit`. A caller that ignores `overLimit` and keeps reading carries on decoding.
+- The transport is supplied by the caller (`fetch` by default), so the engine has no network policy of its own. It does not block private, loopback or link-local addresses. If URLs come from untrusted sources, or the code runs on a server, SSRF protection (address filtering, DNS pinning, egress rules) belongs in your `Transport`.
+- Redirects: the default transport lets `fetch` follow them (`redirect: 'follow'`) with `credentials: 'omit'`, so no cookies or HTTP auth go along. The engine does not limit or inspect redirect hops beyond what the runtime does. It reports `finalUrl` and `redirected` so the caller can check where a response came from, and the validator raises `redirected-sitemap`. A size probe that was redirected to another origin gets no follow-up request of its own. A transport that enforces redirect policy (for example re-checking every hop against an allowlist) must do it itself.
+- Discovery makes `GET` requests (six at a time) to the common sitemap paths on the origin you pass, to the tab URL and the first 20 page links you hand in, and to every `Sitemap:` URL in robots.txt. Those robots.txt URLs are chosen by the remote site and may point to another host, so a server-side caller must filter them in its transport.
+
 ## Entry points
 
 The package root exports the stable API: `SitemapParser`, `ValidationRun`, `MSG`, `discoverSitemaps`, `COMMON_PATHS`, `fetchRobots`, `parseRobots`, `parseRobotsGroups`, `compileRobots`, `matchRobots`, `robotsPathOf`, `fetchTextStream`, `sniffSitemap`, `defaultTransport`, `mediaType`, `NotUtf8Error`, and the types `Transport`, `TransportResponse`, `FetchOptions`, `TextStreamResult`, `SniffResult`, `Discovered`, `DiscoveryResult`, `DiscoveryOptions`, `ParseResult`, `ParseLimits`, `ParseCallbacks`, `IndexChild`, `ValidationContext`, `RuleId`, `CompiledRobots`, `MatchMeter`, `RobotsVerdict`, plus the shared types. Other modules are reachable as subpaths, for example `@lotuswebagency/sitemap-core/validator`, and are less stable.
