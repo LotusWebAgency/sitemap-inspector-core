@@ -2,6 +2,20 @@
   "name": "@lotuswebagency/sitemap-core",
   "version": "0.1.0",
   "description": "Streaming XML sitemap engine: fetch, tokenize, parse and validate sitemaps and robots.txt with bounded memory. No DOM, no browser APIs.",
+  "keywords": [
+    "sitemap",
+    "sitemap.xml",
+    "sitemap-index",
+    "xml",
+    "robots.txt",
+    "seo",
+    "validator",
+    "parser",
+    "streaming",
+    "gzip",
+    "hreflang"
+  ],
+  "author": "LW AGENCY LIMITED",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
@@ -46,5 +60,9 @@
   },
   "overrides": {
     "minimatch": "^11.0.5"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }
