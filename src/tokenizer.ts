@@ -197,6 +197,7 @@ export class XmlTokenizer {
 
   write(chunk: string): XmlToken[] {
     if (this.heldTerm) {
+      if (!chunk) return [];
       const probe = this.heldTail + chunk;
       if (this.heldLen + chunk.length <= this.heldMax && !probe.includes(this.heldTerm)) {
         this.held.push(chunk);
