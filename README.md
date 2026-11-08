@@ -85,7 +85,7 @@ Every cap the engine applies. Sizes are counted after decompression; "characters
 | Sitemap protocol: URLs | 50,000 per file | Reported as `too-many-urls`; parsing continues up to `maxUrls` |
 | Sitemap protocol: size | 50 MB (52,428,800 bytes) uncompressed | Reported as `file-too-large`; parsing continues up to `maxBytes` |
 | Hard stop reached | 150,000 URLs or 150 MB | Reported as `parse-truncated`; results are partial |
-| URL length | 2,048 characters | A `<loc>` of 2,048 or more is reported as `loc-too-long`; a longer sitemap location is not followed |
+| URL length | 2,048 characters | The validator reports a `<loc>` of 2,048 characters or more as `loc-too-long`. A robots.txt `Sitemap:` line longer than 2,048 characters is ignored, and a redirect target longer than 2,048 is not kept |
 | Element nesting | 64 levels | Deeper elements are counted but not tracked |
 | Tag, comment, processing instruction, declaration, DOCTYPE | 65,536 characters each | Reported as an error, discarded without buffering, parsing resumes after it |
 | CDATA section | 1,048,576 characters, `<![CDATA[` included | Same |
@@ -102,7 +102,7 @@ Every cap the engine applies. Sizes are counted after decompression; "characters
 | robots.txt rule path | 2,048 characters | The rule is ignored |
 | robots.txt matching | paths up to 8,192 characters; 300,000,000 steps per `MatchMeter` | The verdict is `over-limit` |
 | Page links used by discovery | 20 | |
-| Timeouts | 30 s idle and 120 s total for a sitemap; 15 s and 30 s for robots.txt and size probes | The request is aborted; override with `timeoutMs` and `totalMs` |
+| Timeouts | 30 s idle and 120 s total for a sitemap; 15 s idle and 30 s total for robots.txt and the sniff probe; the gzip trailer probe has one 15 s timer for its whole request | The request is aborted; override with `timeoutMs` and `totalMs`. The trailer probe takes only `timeoutMs` |
 
 The package never follows a sitemap index into its children. Walking an index, and how deep to go, is up to the caller.
 
@@ -114,7 +114,7 @@ The package never follows a sitemap index into its children. Walking an index, a
 - gzip is decoded as a stream (`DecompressionStream`), only as fast as the consumer reads. The decoded size is counted against `maxBytes`, so a decompression bomb ends at the hard limit once the caller stops reading on `overLimit`. A caller that ignores `overLimit` and keeps reading carries on decoding.
 - The transport is supplied by the caller (`fetch` by default), so the engine has no network policy of its own. It does not block private, loopback or link-local addresses. If URLs come from untrusted sources, or the code runs on a server, SSRF protection (address filtering, DNS pinning, egress rules) belongs in your `Transport`.
 - Redirects: the default transport lets `fetch` follow them (`redirect: 'follow'`) with `credentials: 'omit'`, so no cookies or HTTP auth go along. The engine does not limit or inspect redirect hops beyond what the runtime does. It reports `finalUrl` and `redirected` so the caller can check where a response came from, and the validator raises `redirected-sitemap`. A size probe that was redirected to another origin gets no follow-up request of its own. A transport that enforces redirect policy (for example re-checking every hop against an allowlist) must do it itself.
-- Discovery makes `GET` requests (six at a time) to the common sitemap paths on the origin you pass, to the tab URL and the first 20 page links you hand in, and to every `Sitemap:` URL in robots.txt. Those robots.txt URLs are chosen by the remote site and may point to another host, so a server-side caller must filter them in its transport.
+- Discovery makes `GET` requests (six at a time) to the common sitemap paths on the origin you pass, to the tab URL only when it is same-origin and `looksLikeSitemapUrl`, to the first 20 page links you hand in, and to every `Sitemap:` URL in robots.txt. Those robots.txt URLs are chosen by the remote site and may point to another host, so a server-side caller must filter them in its transport.
 
 ## Entry points
 
