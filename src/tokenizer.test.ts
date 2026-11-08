@@ -16,6 +16,9 @@ function all(chunks: string[]) {
 
 const lineOf = (rows: string[], needle: string) => rows.findIndex((r) => r.includes(needle)) + 1;
 
+// `str` cut into pieces of `size` characters (UTF-16 code units, so a surrogate pair can be split).
+const slices = (str: string, size: number) => Array.from({ length: Math.ceil(str.length / size) }, (_, k) => str.slice(k * size, (k + 1) * size));
+
 // Token builders, without lines.
 const open = (name: string, attrs: Record<string, string> = {}, selfClosing = false) => ({ type: 'open', name, attrs, selfClosing });
 const close = (name: string) => ({ type: 'close', name });
@@ -235,7 +238,6 @@ describe('XmlTokenizer', () => {
     });
 
     it('reads unterminated CDATA fed in tiny chunks in time proportional to its size, not quadratic in the buffer', () => {
-      const slices = (str: string, size: number) => Array.from({ length: Math.ceil(str.length / size) }, (_, k) => str.slice(k * size, (k + 1) * size));
       const t0 = performance.now();
       const t = all(['<a>', ...slices('<![CDATA[' + 'x'.repeat(1 << 20), 64), '<b/></a>']);
       expect(performance.now() - t0).toBeLessThan(1500);
@@ -243,9 +245,54 @@ describe('XmlTokenizer', () => {
     });
 
     it('finds a terminator, a comment end and a PI end split across tiny chunks', () => {
-      const slices = (str: string, size: number) => Array.from({ length: Math.ceil(str.length / size) }, (_, k) => str.slice(k * size, (k + 1) * size));
       const doc = `<a><![CDATA[${'q'.repeat(300)}]]><!-- ${'c'.repeat(300)} --><?pi ${'p'.repeat(300)}?><b/></a>`;
       for (const size of [1, 2, 3, 7]) expect(all(slices(doc, size)), `size ${size}`).toEqual([open('a'), text('q'.repeat(300)), open('b', {}, true), close('a')]);
+    });
+
+    // The caps below are MAX_CDATA (1,048,576, '<![CDATA[' included) and MAX_TAG (65,536, '<!--' included) in tokenizer.ts; neither is exported.
+    it('reads unterminated CDATA at the 1,048,576 cap and one past it the same in 7-character chunks as in one', () => {
+      for (const length of [1_048_576, 1_048_577]) {
+        const doc = `<a><![CDATA[${'x'.repeat(length - 9)}`;
+        const whole = unlined(run(doc, doc.length).tokens);
+        expect(unlined(run(doc, 7).tokens), `length ${length}`).toEqual(whole);
+        expect(whole[0], `length ${length}`).toEqual(open('a'));
+        expect(whole.some((t) => t.type === 'error'), `length ${length}`).toBe(true);
+      }
+    });
+
+    it('reads unterminated comments at the 65,536 cap and one past it the same in 7-character chunks as in one', () => {
+      for (const length of [65_536, 65_537]) {
+        const doc = `<a><!--${'c'.repeat(length - 4)}`;
+        const whole = unlined(run(doc, doc.length).tokens);
+        expect(unlined(run(doc, 7).tokens), `length ${length}`).toEqual(whole);
+        expect(whole[0], `length ${length}`).toEqual(open('a'));
+        expect(whole.some((t) => t.type === 'error'), `length ${length}`).toBe(true);
+      }
+    });
+
+    it('ends a document with a CDATA, comment or PI still held after tiny chunks the same as in one chunk', () => {
+      for (const construct of ['<![CDATA[' + 'q'.repeat(50), '<!--' + 'c'.repeat(50), '<?pi ' + 'p'.repeat(50)]) {
+        const doc = `<a>${construct}`;
+        const whole = unlined(run(doc, doc.length).tokens);
+        for (const size of [1, 2, 3, 7]) expect(unlined(run(doc, size).tokens), `${construct.slice(0, 4)} at ${size}`).toEqual(whole);
+      }
+    });
+
+    it('keeps a surrogate pair split across chunks whole inside CDATA and inside a comment', () => {
+      const cdata = '<a><![CDATA[x😀y]]></a>';
+      const comment = '<a><!--x😀y--><b/></a>';
+      for (const size of [1, 2, 3]) {
+        expect(unlined(run(cdata, size).tokens), `cdata at ${size}`).toEqual([open('a'), text('x😀y'), close('a')]);
+        expect(unlined(run(comment, size).tokens), `comment at ${size}`).toEqual([open('a'), open('b', {}, true), close('a')]);
+      }
+    });
+
+    it('ignores 10,000 empty writes while a comment is held, and the terminator still closes it', () => {
+      const tk = tokenizer();
+      const out = tk.write('<a><!--x');
+      for (let k = 0; k < 10_000; k++) out.push(...tk.write(''));
+      out.push(...tk.write('--><b/></a>'), ...tk.end());
+      expect(unlined(out)).toEqual([open('a'), open('b', {}, true), close('a')]);
     });
 
     it('keeps a terminated CDATA well under the cap intact', () => {
