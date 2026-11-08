@@ -234,6 +234,20 @@ describe('XmlTokenizer', () => {
       expect(t).toEqual([open('a'), error('unterminated-cdata', 'CDATA section is unterminated or too long, skipping it'), open('b', {}, true), close('a')]);
     });
 
+    it('reads unterminated CDATA fed in tiny chunks in time proportional to its size, not quadratic in the buffer', () => {
+      const slices = (str: string, size: number) => Array.from({ length: Math.ceil(str.length / size) }, (_, k) => str.slice(k * size, (k + 1) * size));
+      const t0 = performance.now();
+      const t = all(['<a>', ...slices('<![CDATA[' + 'x'.repeat(1 << 20), 64), '<b/></a>']);
+      expect(performance.now() - t0).toBeLessThan(1500);
+      expect(t.slice(0, 2)).toEqual([open('a'), error('unterminated-cdata', 'CDATA section is unterminated or too long, skipping it')]);
+    });
+
+    it('finds a terminator, a comment end and a PI end split across tiny chunks', () => {
+      const slices = (str: string, size: number) => Array.from({ length: Math.ceil(str.length / size) }, (_, k) => str.slice(k * size, (k + 1) * size));
+      const doc = `<a><![CDATA[${'q'.repeat(300)}]]><!-- ${'c'.repeat(300)} --><?pi ${'p'.repeat(300)}?><b/></a>`;
+      for (const size of [1, 2, 3, 7]) expect(all(slices(doc, size)), `size ${size}`).toEqual([open('a'), text('q'.repeat(300)), open('b', {}, true), close('a')]);
+    });
+
     it('keeps a terminated CDATA well under the cap intact', () => {
       expect(all(['<a><![CDATA[', 'q'.repeat(200000), ']]></a>'])).toEqual([open('a'), text('q'.repeat(200000)), close('a')]);
     });

@@ -118,6 +118,13 @@ export class XmlTokenizer {
   private tagQuote = 0;
   private tagEq = false;
   private strayAt = 0;
+  // An open comment, PI, declaration or CDATA section that can still grow arrives as parts: a chunk that cannot
+  // complete it is appended without joining the buffer, so each chunk costs its own length, not the construct's.
+  private held: string[] = [];
+  private heldLen = 0;
+  private heldTerm = '';
+  private heldMax = 0;
+  private heldTail = '';
   // terminator of an oversized construct being discarded without buffering
   private skip: string | null = null;
   // markup past the cap with no '<' after it yet: everything up to the next '<' still belongs to it, whatever the chunking
@@ -180,7 +187,26 @@ export class XmlTokenizer {
     return -1;
   }
 
+  private joinHeld() {
+    if (!this.heldTerm) return;
+    this.buf = this.held.join('');
+    this.held = [];
+    this.heldTerm = '';
+    this.heldTail = '';
+  }
+
   write(chunk: string): XmlToken[] {
+    if (this.heldTerm) {
+      const probe = this.heldTail + chunk;
+      if (this.heldLen + chunk.length <= this.heldMax && !probe.includes(this.heldTerm)) {
+        this.held.push(chunk);
+        this.heldLen += chunk.length;
+        this.heldTail = probe.slice(probe.length - (this.heldTerm.length - 1));
+        this.resumeAt = Math.max(0, this.heldLen - this.heldTerm.length + 1);
+        return [];
+      }
+      this.joinHeld();
+    }
     this.buf += chunk;
     const out: XmlToken[] = [];
     const buf = this.buf;
@@ -195,12 +221,15 @@ export class XmlTokenizer {
       this.pendingText = null;
     };
 
+    let holdTerm = '', holdMax = 0;
+
     // End of `term` for the construct at i: -1 = need more data, -2 = over `max` (caller discards it)
     const findEnd = (term: string, openLen: number, max: number): number => {
       const e = buf.indexOf(term, i + Math.max(openLen, i === 0 ? rs : 0));
       if (e !== -1 && e - i <= max) return e;
       if (e !== -1 || n - i > max) return -2;
       this.resumeAt = Math.max(0, n - i - term.length + 1);
+      if (i === 0) { holdTerm = term; holdMax = max; }
       return -1;
     };
     const discard = (term: string, openLen: number, code: ExampleCode, what: string) => {
@@ -343,11 +372,20 @@ export class XmlTokenizer {
       if (lt === -1) break; // no more markup found yet; keep pendingText buffered across write() calls
     }
     this.buf = buf.slice(i);
+    if (holdTerm && i === 0 && !this.skip) {
+      this.held = [this.buf];
+      this.heldLen = this.buf.length;
+      this.heldTerm = holdTerm;
+      this.heldMax = holdMax;
+      this.heldTail = this.buf.slice(this.buf.length - (holdTerm.length - 1));
+      this.buf = '';
+    }
     if (out.length) this.emitted = true;
     return out;
   }
 
   end(): XmlToken[] {
+    this.joinHeld();
     const rest = this.buf;
     this.buf = '';
     if (this.skip || this.garbage) { // already reported when the construct was discarded
