@@ -1,5 +1,5 @@
 {
-  "name": "@lotuswebagency/sitemap-core",
+  "name": "@lotuswebagency/sitemap-inspector-core",
   "version": "0.1.0",
   "description": "Streaming XML sitemap engine: fetch, tokenize, parse and validate sitemaps and robots.txt with bounded memory. No DOM, no browser APIs.",
   "keywords": [
@@ -17,6 +17,14 @@
   ],
   "author": "LW AGENCY LIMITED",
   "license": "MIT",
+  "homepage": "https://github.com/LotusWebAgency/sitemap-inspector-core#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LotusWebAgency/sitemap-inspector-core.git"
+  },
+  "bugs": {
+    "url": "https://github.com/LotusWebAgency/sitemap-inspector-core/issues"
+  },
   "type": "module",
   "sideEffects": false,
   "engines": {

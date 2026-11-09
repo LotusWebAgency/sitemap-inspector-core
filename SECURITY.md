@@ -6,4 +6,4 @@ Report vulnerabilities privately by email to <security@lotuswebagency.com>. Plea
 
 ## Supported versions
 
-Only the latest published release of `@lotuswebagency/sitemap-core` receives security fixes.
+Only the latest published release of `@lotuswebagency/sitemap-inspector-core` receives security fixes.

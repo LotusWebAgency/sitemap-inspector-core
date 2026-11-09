@@ -1,4 +1,4 @@
-# @lotuswebagency/sitemap-core
+# @lotuswebagency/sitemap-inspector-core
 
 The sitemap engine behind [XML Sitemap Inspector](https://chromewebstore.google.com/detail/xml-sitemap-inspector/pdcmgglonolfboajejddacmijnhgbplp), a Chrome extension by [Lotus Web Agency](https://lotuswebagency.com/extensions/). It finds, fetches, parses and validates XML sitemaps and robots.txt files as streams, with bounded memory. It needs no DOM and no browser APIs, only `fetch`, web streams, `DecompressionStream` and `TextDecoderStream`, so it runs in Node, workers and browsers.
 
@@ -16,7 +16,7 @@ Not included: the extension's user interface, scan orchestration, storage and ho
 ## Install
 
 ```sh
-npm install @lotuswebagency/sitemap-core
+npm install @lotuswebagency/sitemap-inspector-core
 ```
 
 Requires Node `^22.13.0 || ^24.0.0 || >=26.0.0`, or any runtime with `fetch`, web streams, `DecompressionStream` and `TextDecoderStream`. The package is ESM only.
@@ -26,7 +26,7 @@ Requires Node `^22.13.0 || ^24.0.0 || >=26.0.0`, or any runtime with `fetch`, we
 Fetch, parse and validate one sitemap:
 
 ```ts
-import { SitemapParser, ValidationRun, fetchRobots, fetchTextStream, mediaType } from '@lotuswebagency/sitemap-core';
+import { SitemapParser, ValidationRun, fetchRobots, fetchTextStream, mediaType } from '@lotuswebagency/sitemap-inspector-core';
 
 const sitemapUrl = 'https://example.com/sitemap.xml';
 const origin = new URL(sitemapUrl).origin;
@@ -65,7 +65,7 @@ A custom transport must keep to this contract:
 - `finalUrl` is a non-empty absolute URL. An empty one is replaced by the requested URL.
 
 ```ts
-import { type Transport, fetchRobots } from '@lotuswebagency/sitemap-core';
+import { type Transport, fetchRobots } from '@lotuswebagency/sitemap-inspector-core';
 
 const viaProxy: Transport = async (url, init) => {
   const res = await fetch(`https://proxy.example/?url=${encodeURIComponent(url)}`, init);
@@ -118,7 +118,7 @@ The package never follows a sitemap index into its children. Walking an index, a
 
 ## Entry points
 
-The package root exports the stable API: `SitemapParser`, `ValidationRun`, `MSG`, `discoverSitemaps`, `COMMON_PATHS`, `fetchRobots`, `parseRobots`, `parseRobotsGroups`, `compileRobots`, `matchRobots`, `robotsPathOf`, `fetchTextStream`, `sniffSitemap`, `defaultTransport`, `mediaType`, `NotUtf8Error`, and the types `Transport`, `TransportResponse`, `FetchOptions`, `TextStreamResult`, `SniffResult`, `Discovered`, `DiscoveryResult`, `DiscoveryOptions`, `ParseResult`, `ParseLimits`, `ParseCallbacks`, `IndexChild`, `ValidationContext`, `RuleId`, `CompiledRobots`, `MatchMeter`, `RobotsVerdict`, plus the shared types. Other modules are reachable as subpaths, for example `@lotuswebagency/sitemap-core/validator`, and are less stable.
+The package root exports the stable API: `SitemapParser`, `ValidationRun`, `MSG`, `discoverSitemaps`, `COMMON_PATHS`, `fetchRobots`, `parseRobots`, `parseRobotsGroups`, `compileRobots`, `matchRobots`, `robotsPathOf`, `fetchTextStream`, `sniffSitemap`, `defaultTransport`, `mediaType`, `NotUtf8Error`, and the types `Transport`, `TransportResponse`, `FetchOptions`, `TextStreamResult`, `SniffResult`, `Discovered`, `DiscoveryResult`, `DiscoveryOptions`, `ParseResult`, `ParseLimits`, `ParseCallbacks`, `IndexChild`, `ValidationContext`, `RuleId`, `CompiledRobots`, `MatchMeter`, `RobotsVerdict`, plus the shared types. Other modules are reachable as subpaths, for example `@lotuswebagency/sitemap-inspector-core/validator`, and are less stable.
 
 `matchRobots(compiled, path, meter)` takes the path and query that `robotsPathOf(url, origin)` returns, not `URL.pathname`: rules such as `Disallow: /*?id=` match the query too. `robotsPathOf` returns `null` for a URL on another origin or a non-http(s) URL.
 

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const work = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'sitemap-core-pack-'));
+const work = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'sitemap-inspector-core-pack-'));
 const npmCache = join(work, 'npm-cache');
 const failures = [];
 const fail = (message) => { failures.push(message); };
@@ -53,8 +53,8 @@ try {
   writeFileSync(join(consumer, 'package.json'), JSON.stringify({ name: 'pack-check', private: true, type: 'module' }));
   run('npm', ['install', tarball, '--cache', npmCache, '--ignore-scripts', '--no-audit', '--no-fund'], consumer);
   const smoke = [
-    "import { SitemapParser } from '@lotuswebagency/sitemap-core';",
-    "import { ValidationRun } from '@lotuswebagency/sitemap-core/validator';",
+    "import { SitemapParser } from '@lotuswebagency/sitemap-inspector-core';",
+    "import { ValidationRun } from '@lotuswebagency/sitemap-inspector-core/validator';",
     "if (typeof SitemapParser !== 'function' || typeof ValidationRun !== 'function') process.exit(1);",
   ].join('\n');
   run('node', ['--input-type=module', '-e', smoke], consumer);
