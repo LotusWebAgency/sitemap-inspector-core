@@ -1,4 +1,15 @@
-export interface FetchMeta { status: number; finalUrl: string; redirected: boolean; lastModified?: string | undefined; contentType?: string | undefined; gzip: boolean }
+import { MAX_HTTP_LAST_MODIFIED_CHARS } from './sitemap-limits.js';
+import { isHttpUrl } from './url.js';
+
+/** lastModified is the raw header, kept only up to MAX_HTTP_LAST_MODIFIED_CHARS; contentType is the raw header, see mediaType. */
+export interface FetchMeta {
+  status: number;
+  finalUrl: string;
+  redirected: boolean;
+  lastModified?: string | undefined;
+  contentType?: string | undefined;
+  gzip: boolean;
+}
 /** The response headers a size check needs; present only when the caller asked for them (FetchOptions.probe). */
 interface SizeHeaders { contentRange: string | null; contentLength: string | null; contentEncoding: string | null }
 export interface TextStreamResult extends FetchMeta { ok: boolean; stream: ReadableStream<string> | null; sizeHeaders?: SizeHeaders }
@@ -6,7 +17,10 @@ export type SniffKind = 'urlset' | 'sitemapindex' | 'not-sitemap' | 'http-error'
 export interface SniffResult extends Partial<FetchMeta> {
   sniff: SniffKind;
   encoding?: string | undefined; // set with 'not-utf8'
-  /** File size in bytes: the file as served, and for a .gz its uncompressed size (gzip trailer); the compressed one only with `sizeCompressed`. null = answered, size unknown; absent when the sniff got no answer. */
+  /**
+   * File size in bytes: the file as served, and for a .gz its uncompressed size (gzip trailer); the compressed one only with `sizeCompressed`.
+   * null = answered, size unknown; absent when the sniff got no answer.
+   */
   size?: number | null;
   /** The size is the compressed one of a .gz file (its gzip trailer could not be read). */
   sizeCompressed?: true;
@@ -33,7 +47,12 @@ function bomGuard(): TransformStream<Uint8Array, Uint8Array> {
     checked = true;
     const head = new Uint8Array(Math.min(heldBytes, 4));
     let off = 0;
-    for (const chunk of held) { const take = Math.min(chunk.length, head.length - off); head.set(chunk.subarray(0, take), off); off += take; if (off >= head.length) break; }
+    for (const chunk of held) {
+      const take = Math.min(chunk.length, head.length - off);
+      head.set(chunk.subarray(0, take), off);
+      off += take;
+      if (off >= head.length) break;
+    }
     const encoding = bomEncoding(head);
     if (encoding) throw new NotUtf8Error(encoding);
     for (const chunk of held) c.enqueue(chunk);
@@ -92,12 +111,13 @@ export interface TransportResponse { res: Response; finalUrl: string; redirected
  * - Honor `init.signal`: the idle and total timeouts work by aborting it, so a transport that ignores it can hang a fetch.
  * - `res` carries the upstream status and headers.
  * - The body is the bytes after HTTP content-coding is removed: a raw `.gz` file stays gzip (the engine unzips it), while br and zstd must already be decoded.
- * - `finalUrl` is a non-empty absolute URL; an empty one is replaced by the requested URL.
+ * - `finalUrl` is an absolute http(s) URL; anything else (empty, relative, another scheme) is replaced by the requested URL.
  */
 export type Transport = (url: string, init: RequestInit) => Promise<TransportResponse>;
 
 // Every request goes to the server and nothing is kept: the HTTP cache would serve a repeated run the copy it read before (up to max-age, and
-// a cached copy may differ from what a browser loading the page saw), and browsers answer a Range from a cached compressed body with ranges of the encoded bytes.
+// a cached copy may differ from what a browser loading the page saw), and browsers answer a Range from a cached compressed body with
+// ranges of the encoded bytes.
 const NETWORK_ONLY = { credentials: 'omit', redirect: 'follow', cache: 'no-store' } as const satisfies RequestInit;
 
 export const defaultTransport: Transport = async (url, init) => {
@@ -123,14 +143,28 @@ export async function fetchTextStream(url: string, opts: FetchOptions = {}): Pro
   let finalUrl: string;
   let redirected: boolean;
   const range = opts.probe?.range;
-  try { ({ res, finalUrl, redirected } = await (opts.transport ?? defaultTransport)(url, { signal: ctrl.signal, ...(range === undefined ? {} : { headers: { Range: range } }) })); }
+  try {
+    ({ res, finalUrl, redirected } = await (opts.transport ?? defaultTransport)(url, {
+      signal: ctrl.signal,
+      ...(range === undefined ? {} : { headers: { Range: range } }),
+    }));
+  }
   catch (e) { release(); throw e; }
-  finalUrl ||= url;
+  if (!isHttpUrl(finalUrl)) finalUrl = url; // the contract; ValidationRun parses finalUrl, so a transport's slip must not throw there
+  const lastModified = res.headers.get('last-modified');
   const meta = {
     status: res.status, finalUrl, redirected,
-    lastModified: res.headers.get('last-modified') ?? undefined,
+    lastModified: lastModified !== null && lastModified.length <= MAX_HTTP_LAST_MODIFIED_CHARS ? lastModified : undefined,
     contentType: res.headers.get('content-type') ?? undefined,
-    ...(opts.probe ? { sizeHeaders: { contentRange: res.headers.get('content-range'), contentLength: res.headers.get('content-length'), contentEncoding: res.headers.get('content-encoding') } } : {}),
+    ...(opts.probe
+      ? {
+        sizeHeaders: {
+          contentRange: res.headers.get('content-range'),
+          contentLength: res.headers.get('content-length'),
+          contentEncoding: res.headers.get('content-encoding'),
+        },
+      }
+      : {}),
   };
   if (!res.ok || !res.body) {
     release();
@@ -179,19 +213,26 @@ export async function fetchTextStream(url: string, opts: FetchOptions = {}): Pro
 
 // A plain-text sitemap (sitemaps.org "Text" format): no markup, and the first non-empty line is one absolute http(s) URL.
 const TEXT_SITEMAP_LINE = /^https?:\/\/\S+$/i;
+const MAX_HEAD_LINE = 2048; // a URL line longer than this is not a sitemap line (MAX_URL_CHARS), so the first-line check reads no further
 
-// Index just past the '>' that closes the DOCTYPE starting at s[0]: the one outside quotes and outside [ ... ], with comments and
+// Index just past the '>' that closes the DOCTYPE starting at s[start]: the one outside quotes and outside [ ... ], with comments and
 // processing instructions in the internal subset skipped whole (the same rule as the tokenizer's skipDoctype); -1 when the head ends first.
-function doctypeEnd(s: string): number {
+function doctypeEnd(s: string, start: number): number {
   let quote = '';
   let sub = false;
-  for (let i = 9; i < s.length; i++) {
+  for (let i = start + 9; i < s.length; i++) {
     const c = s.charAt(i);
     if (quote) { if (c === quote) quote = ''; continue; }
     if (c === '"' || c === "'") { quote = c; continue; }
     if (sub) {
       const close = s.startsWith('<!--', i) ? '-->' : s.startsWith('<?', i) ? '?>' : '';
-      if (close) { const e = s.indexOf(close, close === '?>' ? i + 1 : i + 2); if (e === -1) return -1; i = e + close.length - 1; continue; } // `<?>` closes at once, like the tokenizer
+      // `<?>` closes at once, like the tokenizer
+      if (close) {
+        const e = s.indexOf(close, close === '?>' ? i + 1 : i + 2);
+        if (e === -1) return -1;
+        i = e + close.length - 1;
+        continue;
+      }
       if (c === ']') sub = false;
     } else if (c === '[') sub = true;
     else if (c === '>') return i + 1;
@@ -201,21 +242,32 @@ function doctypeEnd(s: string): number {
 
 type HeadVerdict = 'urlset' | 'sitemapindex' | 'not-sitemap';
 
+// Sticky: both scan from lastIndex, so the head is walked by position and never copied (it can be a whole first chunk).
+const HEAD_SPACE = /\s*/y; // the characters trimStart() removes, U+FEFF included
+const HEAD_ROOT = /<([\w:.-]+)/y;
+
 // 'cut': the head ran out before a verdict was possible (inside a comment, processing instruction, declaration or the root name, or nothing but a prolog).
-function walkHead(head: string): HeadVerdict | 'cut' {
-  let s = head.replace(/^\uFEFF/, '').trimStart();
-  if (!s.startsWith('<')) return s === '' ? 'cut' : TEXT_SITEMAP_LINE.test((s.split(/\r\n|\r|\n/, 1)[0] ?? '').trim()) ? 'urlset' : 'not-sitemap';
+function walkHead(s: string): HeadVerdict | 'cut' {
+  const n = s.length;
+  const skipSpace = (from: number): number => { HEAD_SPACE.lastIndex = from; HEAD_SPACE.exec(s); return HEAD_SPACE.lastIndex; };
+  let p = skipSpace(0);
+  if (p >= n) return 'cut';
+  if (s.charCodeAt(p) !== 60) { // not markup: a plain-text sitemap when its first line is one absolute http(s) URL
+    const line = /\r|\n/.exec(s.slice(p, p + 2 * MAX_HEAD_LINE)); // one bounded copy; a URL line is at most MAX_HEAD_LINE anyway
+    return TEXT_SITEMAP_LINE.test(s.slice(p, line ? p + line.index : n).trim()) ? 'urlset' : 'not-sitemap';
+  }
   for (;;) {
-    if (s.startsWith('<?')) { const e = s.indexOf('?>'); if (e === -1) return 'cut'; s = s.slice(e + 2).trimStart(); continue; }
-    if (s.startsWith('<!--')) { const e = s.indexOf('-->'); if (e === -1) return 'cut'; s = s.slice(e + 3).trimStart(); continue; }
-    if (s.startsWith('<!DOCTYPE')) { const e = doctypeEnd(s); if (e === -1) return 'cut'; s = s.slice(e).trimStart(); continue; }
-    if (s.startsWith('<!')) { const e = s.indexOf('>'); if (e === -1) return 'cut'; s = s.slice(e + 1).trimStart(); continue; }
+    if (s.startsWith('<?', p)) { const e = s.indexOf('?>', p); if (e === -1) return 'cut'; p = skipSpace(e + 2); continue; }
+    if (s.startsWith('<!--', p)) { const e = s.indexOf('-->', p); if (e === -1) return 'cut'; p = skipSpace(e + 3); continue; }
+    if (s.startsWith('<!DOCTYPE', p)) { const e = doctypeEnd(s, p); if (e === -1) return 'cut'; p = skipSpace(e); continue; }
+    if (s.startsWith('<!', p)) { const e = s.indexOf('>', p); if (e === -1) return 'cut'; p = skipSpace(e + 1); continue; }
     break;
   }
-  if (s === '' || s === '<') return 'cut';
-  const m = /^<([\w:.-]+)/.exec(s);
+  if (p >= n || (p === n - 1 && s.charCodeAt(p) === 60)) return 'cut';
+  HEAD_ROOT.lastIndex = p;
+  const m = HEAD_ROOT.exec(s);
   if (!m?.[1]) return 'not-sitemap';
-  if (m[0].length === s.length) return 'cut';
+  if (p + m[0].length === n) return 'cut';
   const name = m[1].slice(m[1].lastIndexOf(':') + 1).toLowerCase();
   return name === 'urlset' ? 'urlset' : name === 'sitemapindex' ? 'sitemapindex' : 'not-sitemap';
 }
@@ -290,8 +342,9 @@ async function gzipTrailerSize(url: string, opts: FetchOptions): Promise<number 
 
 interface Opened { r: TextStreamResult; head: string; ended: boolean; emptyAnswer: boolean }
 
-// One GET, ranged when `range` is given, read until the head holds HEAD_CHARS characters or the body ends. A 416 (an empty file answers it) and a 206 that is not the
-// head that was asked for (it does not start at 0 or runs past the range) are answered with one plain GET instead.
+// One GET, ranged when `range` is given, read until the head holds HEAD_CHARS characters or the body ends. A 416 (an empty file
+// answers it) and a 206 that is not the head that was asked for (it does not start at 0 or runs past the range) are answered with
+// one plain GET instead.
 async function openHead(url: string, opts: FetchOptions, range: string | undefined): Promise<Opened | SniffResult> {
   let r: TextStreamResult;
   let refused = false;
@@ -304,7 +357,15 @@ async function openHead(url: string, opts: FetchOptions, range: string | undefin
     }
   } catch { return { sniff: 'network-error' }; }
   if (!r.ok || !r.stream) {
-    return { sniff: 'http-error', status: r.status, finalUrl: r.finalUrl, redirected: r.redirected, gzip: false, lastModified: r.lastModified, contentType: r.contentType };
+    return {
+      sniff: 'http-error',
+      status: r.status,
+      finalUrl: r.finalUrl,
+      redirected: r.redirected,
+      gzip: false,
+      lastModified: r.lastModified,
+      contentType: r.contentType,
+    };
   }
   const reader = r.stream.getReader();
   let head = '';
@@ -327,9 +388,11 @@ async function openHead(url: string, opts: FetchOptions, range: string | undefin
 }
 
 /**
- * Says what a sitemap is and how big it is. Ranged GET of the first 2,048 bytes; a plain GET fallback is read until 2,048 characters. The rest is never downloaded.
+ * Says what a sitemap is and how big it is. Ranged GET of the first 2,048 bytes; a plain GET fallback is read until 2,048 characters.
+ * The rest is never downloaded.
  * A head the range cut inside a long prolog (a comment, a processing instruction, a DOCTYPE) is read again with one plain GET until 2,048 characters, as
- * discovery always did. A check is at most three requests: the ranged one, that second read (or the plain GET a 416 / unusable 206 gets), and for a .gz the trailer.
+ * discovery always did. A check is at most three requests: the ranged one, that second read (or the plain GET a 416 / unusable 206 gets),
+ * and for a .gz the trailer.
  * A 206 is reported as 200: the file exists and answers.
  */
 export async function sniffSitemap(url: string, opts: FetchOptions = {}): Promise<SniffResult> {
@@ -356,11 +419,20 @@ export async function sniffSitemap(url: string, opts: FetchOptions = {}): Promis
   let sizeCompressed = false;
   if (gzip) {
     // `size` so far is the compressed one: the trailer has the real one, and without it the compressed size is all there is
-    const uncompressed = sameOrigin(url, finalUrl) ? await gzipTrailerSize(finalUrl, fetchOpts) : null; // a redirect to another origin gets no request of its own
+    // a redirect to another origin gets no request of its own
+    const uncompressed = sameOrigin(url, finalUrl) ? await gzipTrailerSize(finalUrl, fetchOpts) : null;
     if (uncompressed !== null) size = uncompressed; else if (size !== null) sizeCompressed = true;
   }
   return {
-    sniff: verdict, status: status === 206 ? 200 : status, finalUrl, redirected, lastModified, contentType, gzip, size, ...(sizeCompressed ? { sizeCompressed: true as const } : {}),
+    sniff: verdict,
+    status: status === 206 ? 200 : status,
+    finalUrl,
+    redirected,
+    lastModified,
+    contentType,
+    gzip,
+    size,
+    ...(sizeCompressed ? { sizeCompressed: true as const } : {}),
   };
 }
 

@@ -22,5 +22,21 @@ export function isValidW3CDate(s: string): boolean {
   return true;
 }
 
+const MAX_PARSED_CACHE = 1000;
+const parsed = new Map<string, number>();
+
+/**
+ * The time of a valid W3C date in ms since the epoch, NaN for anything else. Memoized: the parser and the validator both
+ * read every <lastmod>, and a sitemap repeats a few values many times. A flood of distinct values only clears the memo.
+ */
+export function parseW3CDate(s: string): number {
+  const known = parsed.get(s);
+  if (known !== undefined) return known;
+  const t = isValidW3CDate(s) ? Date.parse(s) : NaN;
+  if (parsed.size >= MAX_PARSED_CACHE) parsed.clear();
+  parsed.set(s, t);
+  return t;
+}
+
 /** A valid W3C date that names a day: YYYY-MM-DD at least. News and video dates need that much; a bare year or month fails. */
 export const isFullW3CDate = (s: string): boolean => s.length >= 10 && isValidW3CDate(s);

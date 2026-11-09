@@ -43,11 +43,22 @@
       "default": "./dist/index.js"
     },
     "./package.json": "./package.json",
-    "./*": {
-      "types": "./dist/*.d.ts",
-      "import": "./dist/*.js",
-      "default": "./dist/*.js"
-    }
+    "./discovery": { "types": "./dist/discovery.d.ts", "import": "./dist/discovery.js", "default": "./dist/discovery.js" },
+    "./extensions": { "types": "./dist/extensions.d.ts", "import": "./dist/extensions.js", "default": "./dist/extensions.js" },
+    "./fetcher": { "types": "./dist/fetcher.d.ts", "import": "./dist/fetcher.js", "default": "./dist/fetcher.js" },
+    "./hash53": { "types": "./dist/hash53.d.ts", "import": "./dist/hash53.js", "default": "./dist/hash53.js" },
+    "./lang-codes": { "types": "./dist/lang-codes.d.ts", "import": "./dist/lang-codes.js", "default": "./dist/lang-codes.js" },
+    "./normalize": { "types": "./dist/normalize.d.ts", "import": "./dist/normalize.js", "default": "./dist/normalize.js" },
+    "./parser": { "types": "./dist/parser.d.ts", "import": "./dist/parser.js", "default": "./dist/parser.js" },
+    "./printer": { "types": "./dist/printer.d.ts", "import": "./dist/printer.js", "default": "./dist/printer.js" },
+    "./robots": { "types": "./dist/robots.d.ts", "import": "./dist/robots.js", "default": "./dist/robots.js" },
+    "./row-flags": { "types": "./dist/row-flags.d.ts", "import": "./dist/row-flags.js", "default": "./dist/row-flags.js" },
+    "./sitemap-limits": { "types": "./dist/sitemap-limits.d.ts", "import": "./dist/sitemap-limits.js", "default": "./dist/sitemap-limits.js" },
+    "./tokenizer": { "types": "./dist/tokenizer.d.ts", "import": "./dist/tokenizer.js", "default": "./dist/tokenizer.js" },
+    "./types": { "types": "./dist/types.d.ts", "import": "./dist/types.js", "default": "./dist/types.js" },
+    "./url": { "types": "./dist/url.d.ts", "import": "./dist/url.js", "default": "./dist/url.js" },
+    "./validator": { "types": "./dist/validator.d.ts", "import": "./dist/validator.js", "default": "./dist/validator.js" },
+    "./w3c-date": { "types": "./dist/w3c-date.d.ts", "import": "./dist/w3c-date.js", "default": "./dist/w3c-date.js" }
   },
   "scripts": {
     "build": "node scripts/clean.mjs && tsc -p tsconfig.build.json",

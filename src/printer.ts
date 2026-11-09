@@ -1,7 +1,10 @@
 export type SpanKind = 'decl' | 'pi' | 'comment' | 'doctype' | 'cdata' | 'open' | 'self' | 'close' | 'text' | 'bad';
 
 export interface LayoutSink {
-  /** One consumed span of input, in document order. `more`: the construct continues in the next call (streamed DOCTYPE, discarded construct). Returns the 1-based output line the construct starts on (0 for a text run with no content yet). */
+  /**
+   * One consumed span of input, in document order. `more`: the construct continues in the next call (streamed DOCTYPE, discarded construct).
+   * Returns the 1-based output line the construct starts on (0 for a text run with no content yet).
+   */
   span(kind: SpanKind, raw: string, more?: boolean): number;
   /** The last line started so far, 0 before any. */
   readonly line: number;

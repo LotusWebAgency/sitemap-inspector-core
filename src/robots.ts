@@ -96,7 +96,10 @@ export function robotsMode(robots: RobotsInfo | null): RobotsMode {
 }
 
 /** signal: the caller's, so a cancelled or timed-out run stops reading robots.txt; the fetch itself is capped at 15 s idle and 30 s in all. */
-export async function fetchRobots(origin: string, opts: { signal?: AbortSignal | undefined; transport?: Transport | undefined } = {}): Promise<RobotsInfo | null> {
+export async function fetchRobots(
+  origin: string,
+  opts: { signal?: AbortSignal | undefined; transport?: Transport | undefined } = {},
+): Promise<RobotsInfo | null> {
   const url = `${origin}/robots.txt`;
   let text = '';
   let status: number;
@@ -128,7 +131,9 @@ export async function fetchRobots(origin: string, opts: { signal?: AbortSignal |
 }
 
 const MAX_MATCH_PATH = 8192;                    // longer paths are not checked (over-limit)
-export const MATCH_STEP_BUDGET = 300_000_000;   // steps per meter, then over-limit: about 0.7-1.8 s of work in all (measured 2.3-6 ms per million); a caller can spread that over several meters or calls to keep each slice short
+// steps per meter, then over-limit: about 0.7-1.8 s of work in all (measured 2.3-6 ms per million);
+// a caller can spread that over several meters or calls to keep each slice short
+export const MATCH_STEP_BUDGET = 300_000_000;
 const RULE_STEP_COST = 4;                       // steps charged for examining one rule, whatever it compares
 const SKIP_STEP_COST = 1;                       // steps charged for a rule the length / character prefilter rules out
 const CALL_STEP_COST = 64;                      // steps charged for one match call on top of its path length
@@ -174,7 +179,10 @@ export function normalizeRobotsPath(s: string): string {
   return out;
 }
 
-/** The part of a URL that robots.txt rules match (path and query), or null when the URL is not http(s) on exactly this origin or one of the given alias origins. */
+/**
+ * The part of a URL that robots.txt rules match (path and query), or null when the URL is not http(s) on exactly this origin
+ * or one of the given alias origins.
+ */
 export function robotsPathOf(loc: string | URL, origin: string, aliases?: readonly string[]): string | null {
   let u: URL;
   try { u = typeof loc === 'string' ? new URL(loc) : loc; } catch { return null; }
@@ -189,7 +197,8 @@ function selectRules(groups: readonly RobotsGroup[], agent: string): RobotsRule[
   return groups.filter((g) => g.agents.includes(pick)).flatMap((g) => g.rules);
 }
 
-// A literal run between stars. Its KMP failure table lives in the compiled set's shared array at [off, off + text.length); parts of one character need none (off = -1).
+// A literal run between stars. Its KMP failure table lives in the compiled set's shared array at [off, off + text.length);
+// parts of one character need none (off = -1).
 interface Part { text: string; off: number }
 /** A rule ready to match: its normalized pattern cut at '*' into a literal first part, middle parts and a last part. */
 interface CompiledRule {
@@ -228,7 +237,8 @@ const countStars = (pattern: string): number => {
   return n;
 };
 
-// One bit per charCode % 64 in a pair of 32-bit ints (a lower- and an upper-case letter share nothing, but 'a' and '!' do: a collision only lets a rule through to the full match).
+// One bit per charCode % 64 in a pair of 32-bit ints (a lower- and an upper-case letter share nothing, but 'a' and '!' do:
+// a collision only lets a rule through to the full match).
 function addToMask(mask: [number, number], text: string): void {
   for (let i = 0; i < text.length; i++) {
     const bit = text.charCodeAt(i) & 63;
@@ -402,10 +412,17 @@ const UNCHECKED = {
 } as const;
 type UncheckedCode = keyof typeof UNCHECKED;
 
-/** Example for a URL the crawler may not fetch: the URL, the deciding rule and its robots.txt line (a string param, so it renders without a thousands separator). */
+/**
+ * Example for a URL the crawler may not fetch: the URL, the deciding rule and its robots.txt line
+ * (a string param, so it renders without a thousands separator).
+ */
 export function blockedExample(url: string, rule: RobotsRule): FindingExample {
   const text = `${rule.allow ? 'Allow' : 'Disallow'}: ${rule.path}`;
-  return { value: `${url}: blocked by "${text}" (robots.txt line ${rule.line})`, code: 'robots-rule', params: { url, rule: text, robotsLine: String(rule.line) } };
+  return {
+    value: `${url}: blocked by "${text}" (robots.txt line ${rule.line})`,
+    code: 'robots-rule',
+    params: { url, rule: text, robotsLine: String(rule.line) },
+  };
 }
 
 /** Example for a URL that was not checked, with the reason as its code. */

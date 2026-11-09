@@ -6,7 +6,7 @@ import { MAX_PAGE_LINKS } from './url.js';
 const ok = (url: string, kind: 'urlset' | 'sitemapindex' = 'urlset', extra: Partial<SniffResult> = {}): SniffResult =>
   ({ sniff: kind, status: 200, finalUrl: url, redirected: false, gzip: false, ...extra });
 const miss = (): SniffResult => ({ sniff: 'http-error', status: 404 });
-const sniffing = (hits: Record<string, SniffResult> = {}) => vi.fn(async (url: string): Promise<SniffResult> => hits[url] ?? miss());
+const sniffing = (hits: Record<string, SniffResult> = {}) => vi.fn(async (url: string, _opts?: unknown): Promise<SniffResult> => hits[url] ?? miss());
 
 describe('pLimit', () => {
   it('runs at most n at once, starts the next as soon as one finishes, and returns each result', async () => {
@@ -191,6 +191,12 @@ describe('discoverSitemaps', () => {
       expect(failedRobots.map((f) => f.url)).toEqual(sitemapUrls.slice(2));
       expect(failedRobots.every((f) => f.reason === 'time-limit')).toBe(true);
     });
+  });
+
+  it('passes every sniff the same options object, empty when there is no signal and no transport', async () => {
+    const sniff = sniffing({});
+    await discoverSitemaps(origin, null, { sniff });
+    expect(sniff.mock.calls.map(([, opts]) => opts)).toEqual(Array.from({ length: COMMON_PATHS.length }, () => ({})));
   });
 
   it('sniffs the tab url first and lists it with source tab, without its fragment', async () => {

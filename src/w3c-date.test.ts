@@ -1,5 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { isFullW3CDate, isValidW3CDate } from './w3c-date.js';
+import { isFullW3CDate, isValidW3CDate, parseW3CDate } from './w3c-date.js';
+
+describe('parseW3CDate', () => {
+  it('gives the time of a valid W3C date and NaN for anything else, the same on a repeat', () => {
+    for (const d of ['2026', '2026-05', '2026-05-01', '2026-05-01T10:30Z', '2026-05-01T10:30:00.5+02:00']) {
+      expect(parseW3CDate(d), d).toBe(Date.parse(d));
+      expect(parseW3CDate(d), `${d} again`).toBe(Date.parse(d));
+    }
+    for (const d of ['2026-02-30', '01.05.2026', 'Wed, 01 Jul 2026 00:00:00 GMT', '']) {
+      expect(parseW3CDate(d), d).toBeNaN();
+      expect(parseW3CDate(d), `${d} again`).toBeNaN();
+    }
+  });
+});
 
 describe('isValidW3CDate', () => {
   it('accepts valid forms', () => {

@@ -3,7 +3,7 @@ import { XmlTokenizer, type XmlToken } from './tokenizer.js';
 import { ExtensionCollector, IMAGE_NS, XHTML_NS, unknownExtensionNamespace, type ExtensionHit } from './extensions.js';
 import { duplicateKey, rememberParsedLoc } from './normalize.js';
 import { DUPLICATE_BIT } from './row-flags.js';
-import { isValidW3CDate } from './w3c-date.js';
+import { parseW3CDate } from './w3c-date.js';
 import { hash53 } from './hash53.js';
 import type { Alternate, ExampleCode, Params, SitemapKind, SitemapStats, UrlRecord } from './types.js';
 
@@ -18,7 +18,16 @@ export interface StructuralIssue {
 }
 // text: read as a plain-text sitemap (one URL per line) rather than XML; finish() always sets it.
 // children holds the first MAX_KEPT_CHILDREN entries, their locs cut to MAX_CHILD_LOC characters; childOverflow counts the rest.
-export interface ParseResult { kind: SitemapKind; stats: SitemapStats; children: IndexChild[]; childOverflow?: number; issues: StructuralIssue[]; bareAmpersands: number; truncated: boolean; text?: boolean }
+export interface ParseResult {
+  kind: SitemapKind;
+  stats: SitemapStats;
+  children: IndexChild[];
+  childOverflow?: number;
+  issues: StructuralIssue[];
+  bareAmpersands: number;
+  truncated: boolean;
+  text?: boolean;
+}
 // ext carries the extension hits of exactly these records, in record order; recordIx indexes into records. onLines gets the
 // printed XML rows (./printer.ts) in batches; every line number the parser reports is a row number there.
 export interface ParseCallbacks { onRecords(records: UrlRecord[], ext: readonly ExtensionHit[]): void; onLines?: (lines: string[]) => void }
@@ -123,7 +132,14 @@ export class SitemapParser {
   private textLine = ''; private textLen = 0; private textLineNo = 1; // textLineNo: the row the current line starts on
   // element state
   private inUrl = false; private urlLine = 1;
-  private cur: { loc?: string; lastmod?: string; changefreq?: string; priority?: string; images: number; alternates: Alternate[] } = { images: 0, alternates: [] };
+  private cur: {
+    loc?: string;
+    lastmod?: string;
+    changefreq?: string;
+    priority?: string;
+    images: number;
+    alternates: Alternate[];
+  } = { images: 0, alternates: [] };
   private field: 'loc' | 'lastmod' | 'changefreq' | 'priority' | null = null;
   private fieldText = '';
   private fieldDup = false; // the open field repeats one of its entry: its text is dropped, the first value stays
@@ -205,7 +221,8 @@ export class SitemapParser {
     this.byteSize += utf8Length(chunk);
     if (this.mode === 'text') this.textLines(chunk);
     else for (const t of this.tk.write(chunk)) this.take(t);
-    if (this.byteSize > this.limits.maxBytes || this.urlCount > this.limits.maxUrls || this.children.length + this.childOverflow > this.limits.maxUrls) this.truncated = true;
+    if (this.byteSize > this.limits.maxBytes || this.urlCount > this.limits.maxUrls
+      || this.children.length + this.childOverflow > this.limits.maxUrls) this.truncated = true;
   }
 
   // Plain-text sitemap: every non-empty line is a <loc>, on the row the printer starts for it.
@@ -215,7 +232,9 @@ export class SitemapParser {
       const row = this.printer.plain(chunk.slice(from, end));
       if (!this.textLen) this.textLineNo = row;
       this.textLen += end - from;
-      if (this.textLine.length < MAX_TEXT_LINE) this.textLine = (this.textLine + chunk.slice(from, Math.min(end, from + MAX_TEXT_LINE))).slice(0, MAX_TEXT_LINE);
+      if (this.textLine.length < MAX_TEXT_LINE) {
+        this.textLine = (this.textLine + chunk.slice(from, Math.min(end, from + MAX_TEXT_LINE))).slice(0, MAX_TEXT_LINE);
+      }
     }, () => { this.printer.plain('\n'); this.endTextLine(); });
   }
 
@@ -231,15 +250,27 @@ export class SitemapParser {
 
   finish(): ParseResult {
     if (this.mode === 'detect') this.settle();
-    if (this.mode === 'text') { if (this.textLen) this.endTextLine(); } else for (const t of this.tk.end()) this.take(t);
+    if (this.mode === 'text') { if (this.textLen) this.endTextLine(); } else {
+      const tail = this.tk.end(); // always runs: the printer numbers the rest
+      if (!this.truncated) for (const t of tail) this.take(t); // past the hard stop the cut construct is no syntax error
+    }
     this.printer.finish();
     const lastLine = this.printer.line || undefined; // an empty or whitespace-only document has no row, so its finding carries no line
     if (this.batch.length) { this.cb.onRecords(this.batch, this.extBatch); this.batch = []; this.extBatch = []; }
     if (!this.truncated) {
-      if (!this.sawRoot) this.issue('root-element', 'no-root', {}, 'no root element found: the document is empty or not XML, expected <urlset> or <sitemapindex>', lastLine);
+      if (!this.sawRoot) {
+        this.issue(
+          'root-element', 'no-root', {},
+          'no root element found: the document is empty or not XML, expected <urlset> or <sitemapindex>', lastLine,
+        );
+      }
       else if (this.stack.length) {
         const count = this.stack.length + this.overflowDepth, tag = this.stack.at(-1) ?? '';
-        this.issue('xml-error', 'unclosed-elements', { count, tag }, `${count.toLocaleString('en-US')} element${count === 1 ? '' : 's'} left unclosed at end of document, innermost <${tag}> (truncated file?)`, lastLine);
+        this.issue(
+          'xml-error', 'unclosed-elements', { count, tag },
+          `${count.toLocaleString('en-US')} element${count === 1 ? '' : 's'} left unclosed at end of document, innermost <${tag}> (truncated file?)`,
+          lastLine,
+        );
       }
     }
     let topLastmodShare = 0;
@@ -293,7 +324,12 @@ export class SitemapParser {
   private take(t: XmlToken): void {
     if (t.type === 'error') { this.issue('xml-error', t.code, t.params, t.message, t.line); return; }
     if (t.type === 'xmldecl') {
-      if (t.encoding !== '' && !UTF8_COMPATIBLE.test(t.encoding)) this.issue('encoding-not-utf8', 'encoding-not-utf8', { encoding: t.encoding }, `Sitemap declares ${t.encoding} encoding; sitemaps must be UTF-8`, t.line);
+      if (t.encoding !== '' && !UTF8_COMPATIBLE.test(t.encoding)) {
+        this.issue(
+          'encoding-not-utf8', 'encoding-not-utf8', { encoding: t.encoding },
+          `Sitemap declares ${t.encoding} encoding; sitemaps must be UTF-8`, t.line,
+        );
+      }
       return;
     }
     if (this.rootClosed) {
@@ -307,7 +343,7 @@ export class SitemapParser {
     }
     if (t.type === 'open') {
       const name = local(t.name);
-      // attrs is a plain object the tokenizer filled with own keys only, so for-in visits what Object.entries would
+      // attrs has no prototype (the tokenizer builds it with Object.create(null)), so for-in visits own keys only
       for (const k in t.attrs) {
         if (!k.startsWith('xmlns:')) continue;
         const prefix = k.slice(6);
@@ -324,21 +360,34 @@ export class SitemapParser {
         this.sawRoot = true;
         if (name === 'urlset') this.kind = 'urlset';
         else if (name === 'sitemapindex') this.kind = 'sitemapindex';
-        else { this.stack = []; this.issue('root-element', 'wrong-root', { tag: t.name }, `root element is <${t.name}>, expected <urlset> or <sitemapindex>`, t.line); return; }
+        else {
+          this.stack = [];
+          this.issue(
+            'root-element', 'wrong-root', { tag: t.name },
+            `root element is <${t.name}>, expected <urlset> or <sitemapindex>`, t.line,
+          );
+          return;
+        }
         const rootPrefix = prefixOf(t.name);
         this.rootPrefix = rootPrefix;
         this.rootClosed = t.selfClosing;
         const rootNs = t.attrs[rootPrefix ? `xmlns:${rootPrefix}` : 'xmlns'];
         if (rootNs !== SITEMAP_NS) {
           const attr = rootPrefix ? `xmlns:${rootPrefix}` : 'xmlns';
-          this.issue('namespace', 'wrong-namespace', { attr, value: rootNs ?? '', expected: SITEMAP_NS }, `root ${attr} is "${rootNs ?? ''}", expected "${SITEMAP_NS}"`, t.line);
+          this.issue(
+            'namespace', 'wrong-namespace', { attr, value: rootNs ?? '', expected: SITEMAP_NS },
+            `root ${attr} is "${rootNs ?? ''}", expected "${SITEMAP_NS}"`, t.line,
+          );
         }
         return;
       }
       if ((name === 'url' && this.kind === 'sitemapindex') || (name === 'sitemap' && this.kind === 'urlset')) {
         if (!this.inUrl && !this.inChild && this.isSitemapName(t.name)) { // the entry is dropped; its children never arm a field
           const root = this.kind;
-          this.issue('wrong-entry-kind', 'wrong-entry-kind', { found: name, root }, `<${name}> entry inside <${root}> is ignored; use <url> in a <urlset> and <sitemap> in a <sitemapindex>`, t.line);
+          this.issue(
+            'wrong-entry-kind', 'wrong-entry-kind', { found: name, root },
+            `<${name}> entry inside <${root}> is ignored; use <url> in a <urlset> and <sitemap> in a <sitemapindex>`, t.line,
+          );
         }
         return;
       }
@@ -346,7 +395,10 @@ export class SitemapParser {
       if (sitemapName && ((name === 'url' && this.kind === 'urlset') || (name === 'sitemap' && this.kind === 'sitemapindex'))) {
         if (!this.inUrl && !this.inChild && !this.leakedEntries.length && parentBefore !== undefined && depthBefore > 1) {
           const parent = local(parentBefore);
-          this.issue('misplaced-element', 'misplaced-element', { parent }, `unexpected entry or text inside <${parent}>; entries belong directly under the root element`, t.line);
+          this.issue(
+            'misplaced-element', 'misplaced-element', { parent },
+            `unexpected entry or text inside <${parent}>; entries belong directly under the root element`, t.line,
+          );
         }
         if ((this.inUrl || this.inChild) && this.entryIdx >= 0 && this.entryIdx < this.stack.length) this.leakedEntries.push(this.entryIdx);
         this.entryIdx = !t.selfClosing && depthBefore >= 0 && this.stack.length === depthBefore + 1 ? depthBefore : -1;
@@ -356,7 +408,10 @@ export class SitemapParser {
         // the next element instead, since no matching close token ever arrives.
         if (t.selfClosing) { this.issue('loc-missing', 'url-without-loc', {}, 'url entry has no <loc>', t.line); return; }
         if (this.inUrl) { // previous <url> never closed: report it and keep its record if it had a loc
-          this.issue('xml-error', 'url-not-closed', { line: String(t.line), openLine: String(this.urlLine) }, `<url> opened at line ${t.line} before the <url> from line ${this.urlLine} was closed`, t.line);
+          this.issue(
+            'xml-error', 'url-not-closed', { line: String(t.line), openLine: String(this.urlLine) },
+            `<url> opened at line ${t.line} before the <url> from line ${this.urlLine} was closed`, t.line,
+          );
           if (this.cur.loc) this.pushRecord(this.cur.loc);
         }
         this.ext.endUrl(); // drops what a <url> without <loc> left behind
@@ -368,11 +423,19 @@ export class SitemapParser {
       }
       if (this.inUrl) this.ext.open(this.nsOf(t.name), name, t.line, t.selfClosing);
       if (this.inUrl && name === 'image' && this.nsOf(t.name) === IMAGE_NS) { this.cur.images++; return; }
-      if ((this.inUrl || this.inChild) && this.isSitemapName(t.name) && (name === 'loc' || name === 'lastmod' || name === 'changefreq' || name === 'priority')) {
+      if (
+        (this.inUrl || this.inChild) && this.isSitemapName(t.name)
+        && (name === 'loc' || name === 'lastmod' || name === 'changefreq' || name === 'priority')
+      ) {
         const bit = FIELD_BIT[name];
         const repeated = (this.seenFields & bit) !== 0;
         this.seenFields |= bit;
-        if (repeated) this.issue('duplicate-field', 'duplicate-field', { field: name }, `<${name}> appears more than once in one entry; only the first is used`, t.line);
+        if (repeated) {
+          this.issue(
+            'duplicate-field', 'duplicate-field', { field: name },
+            `<${name}> appears more than once in one entry; only the first is used`, t.line,
+          );
+        }
         if (t.selfClosing) return; // empty element — must not leave field state armed for later text
         this.field = name; this.fieldText = ''; this.fieldDup = repeated; return;
       }
@@ -381,7 +444,10 @@ export class SitemapParser {
         const p = prefixOf(t.name);
         if ((p ? this.nsPrefixes.get(p) : t.attrs['xmlns']) !== XHTML_NS) {
           const tag = t.name.slice(0, 100);
-          this.issue('alternate-wrong-namespace', 'alternate-wrong-namespace', { name: tag }, `<${tag} rel="alternate"> is not in the xhtml namespace (${XHTML_NS}), so it is not read as an hreflang alternate`, t.line);
+          this.issue(
+            'alternate-wrong-namespace', 'alternate-wrong-namespace', { name: tag },
+            `<${tag} rel="alternate"> is not in the xhtml namespace (${XHTML_NS}), so it is not read as an hreflang alternate`, t.line,
+          );
           return;
         }
         const href = t.attrs['href'];
@@ -394,7 +460,10 @@ export class SitemapParser {
       if (this.inUrl) this.ext.text(t.text);
       else if (!this.inChild && this.kind !== 'unknown' && !this.overflowDepth && this.stack.length === 1 && t.text.trim()) {
         const parent = local(this.stack[0] ?? '');
-        this.issue('misplaced-element', 'misplaced-element', { parent }, `unexpected entry or text inside <${parent}>; entries belong directly under the root element`, t.line);
+        this.issue(
+          'misplaced-element', 'misplaced-element', { parent },
+          `unexpected entry or text inside <${parent}>; entries belong directly under the root element`, t.line,
+        );
       }
       return;
     }
@@ -430,7 +499,9 @@ export class SitemapParser {
     if (name === 'sitemap' && this.inChild && this.isSitemapName(t.name)) {
       this.inChild = false;
       if (this.child.loc) {
-        if (this.children.length < MAX_KEPT_CHILDREN) this.children.push({ loc: structuredClone(this.child.loc.slice(0, MAX_CHILD_LOC)), lastmod: this.child.lastmod, line: this.childLine });
+        if (this.children.length < MAX_KEPT_CHILDREN) {
+          this.children.push({ loc: structuredClone(this.child.loc.slice(0, MAX_CHILD_LOC)), lastmod: this.child.lastmod, line: this.childLine });
+        }
         else this.childOverflow++;
       }
       else this.issue('loc-missing', 'sitemap-without-loc', {}, 'sitemap entry has no <loc>', this.childLine);
@@ -445,7 +516,10 @@ export class SitemapParser {
     if (this.nsReported.has(key) || this.nsReported.size >= MAX_NS_PREFIXES) return;
     this.nsReported.add(key);
     const shown = uri.slice(0, 300);
-    this.issue('extension-namespace-unknown', 'extension-namespace-unknown', { prefix, uri: shown }, `xmlns:${prefix} is bound to "${shown}", which is not the namespace Google documents for it`, line);
+    this.issue(
+      'extension-namespace-unknown', 'extension-namespace-unknown', { prefix, uri: shown },
+      `xmlns:${prefix} is bound to "${shown}", which is not the namespace Google documents for it`, line,
+    );
   }
 
   private closeElement(t: Extract<XmlToken, { type: 'close' }>): void {
@@ -478,14 +552,16 @@ export class SitemapParser {
     if (this.cur.images) { r.images = this.cur.images; this.imageCount += this.cur.images; }
     if (this.cur.alternates.length) {
       r.alternates = this.cur.alternates;
-      for (const a of this.cur.alternates) if (a.hreflang && (this.languages.size < MAX_LANGUAGES || this.languages.has(a.hreflang))) this.languages.add(a.hreflang);
+      for (const a of this.cur.alternates) {
+        if (a.hreflang && (this.languages.size < MAX_LANGUAGES || this.languages.has(a.hreflang))) this.languages.add(a.hreflang);
+      }
       const cluster = hash53(this.cur.alternates.map((a) => a.href).sort().join('|'));
       this.clusters.add(cluster);
       if (this.cur.alternates.some((a) => a.hreflang.toLowerCase() === 'x-default')) this.xdefaultClusters.add(cluster);
     }
     this.urlCount++;
     if (r.lastmod) {
-      const t = isValidW3CDate(r.lastmod) ? Date.parse(r.lastmod) : NaN;
+      const t = parseW3CDate(r.lastmod);
       if (!Number.isNaN(t)) {
         if (Number.isNaN(this.lastmodMinT) || t < this.lastmodMinT) { this.lastmodMin = r.lastmod; this.lastmodMinT = t; }
         if (Number.isNaN(this.lastmodMaxT) || t > this.lastmodMaxT) { this.lastmodMax = r.lastmod; this.lastmodMaxT = t; }
@@ -501,7 +577,8 @@ export class SitemapParser {
     const key = url && duplicateKey(url);
     if (key) {
       const h = hash53(key);
-      if (this.seen.has(h)) { this.duplicateCount++; r.flags = DUPLICATE_BIT; } else this.seen.add(h); // the validator reports the marked repeat and keeps the bit
+      // the validator reports the marked repeat and keeps the bit
+      if (this.seen.has(h)) { this.duplicateCount++; r.flags = DUPLICATE_BIT; } else this.seen.add(h);
     }
     this.batch.push(r);
     if (this.batch.length >= this.flushSize) { this.cb.onRecords(this.batch, this.extBatch); this.batch = []; this.extBatch = []; }

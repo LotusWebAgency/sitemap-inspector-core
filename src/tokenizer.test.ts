@@ -55,6 +55,15 @@ describe('XmlTokenizer', () => {
     ]);
   });
 
+  it('keeps attributes in a prototype-free object, so __proto__ and constructor are plain attribute names', () => {
+    const [t] = all(['<url __proto__="a" constructor="b" toString="c"/>']);
+    expect(t?.type).toBe('open');
+    if (t?.type !== 'open') return;
+    expect(Object.getPrototypeOf(t.attrs)).toBeNull();
+    expect(Object.entries(t.attrs)).toEqual([['__proto__', 'a'], ['constructor', 'b'], ['toString', 'c']]);
+    expect('hasOwnProperty' in t.attrs).toBe(false);
+  });
+
   it('handles self-closing tags with attributes (hreflang links)', () => {
     const t = all(['<xhtml:link rel="alternate" hreflang="de" href="https://a.com/de/"/>']);
     expect(t[0]).toEqual({

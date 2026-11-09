@@ -16,7 +16,8 @@ const ENTITY_RE = new RegExp(`&(#[0-9]{1,${MAX_REF_LEN - 3}}|#[xX][0-9a-fA-F]{1,
 
 // XML 1.0 Char production: tab, LF, CR, U+0020..U+D7FF, U+E000..U+FFFD, U+10000..U+10FFFF
 // (so &#0;, &#xFFFE;, &#xFFFF;, surrogates, other C0 controls and anything past U+10FFFF stay literal).
-const isXmlChar = (c: number) => c === 9 || c === 10 || c === 13 || (c >= 0x20 && c <= 0xd7ff) || (c >= 0xe000 && c <= 0xfffd) || (c >= 0x10000 && c <= 0x10ffff);
+const isXmlChar = (c: number) => c === 9 || c === 10 || c === 13
+  || (c >= 0x20 && c <= 0xd7ff) || (c >= 0xe000 && c <= 0xfffd) || (c >= 0x10000 && c <= 0x10ffff);
 
 // `decoded` counts the entities actually replaced, so bare-ampersand counting agrees with decoding.
 function decodeCounting(s: string): [string, number] {
@@ -48,7 +49,8 @@ function countAmps(s: string): number {
 const isNameChar = (c: number) => (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c === 95 || c === 58 || c === 46 || c === 45;
 
 // Exactly the characters of the regex class \s (and of String.prototype.trim): JS whitespace and line terminators.
-const isSpace = (c: number) => c === 32 || (c >= 9 && c <= 13) || c === 0xa0 || c === 0x1680 || (c >= 0x2000 && c <= 0x200a) || c === 0x2028 || c === 0x2029 || c === 0x202f || c === 0x205f || c === 0x3000 || c === 0xfeff;
+const isSpace = (c: number) => c === 32 || (c >= 9 && c <= 13) || c === 0xa0 || c === 0x1680 || (c >= 0x2000 && c <= 0x200a)
+  || c === 0x2028 || c === 0x2029 || c === 0x202f || c === 0x205f || c === 0x3000 || c === 0xfeff;
 
 // Same as /^[\w:.-]+$/ (\w is ASCII only).
 function isName(s: string): boolean {
@@ -58,10 +60,13 @@ function isName(s: string): boolean {
   return true;
 }
 
+// Attribute maps have no prototype: a name such as __proto__ or constructor is an ordinary own key, never an inherited member.
+const noAttrs = (): Record<string, string> => Object.create(null) as Record<string, string>;
+
 // Linear single pass: name, '=', quoted value; anything else is skipped. `seen` collects what makes the tag
 // malformed XML: a bare '&' in a value counts like one in text, a raw '<' in a value is an error.
 function parseAttrs(s: string, seen: { bare: number; lt: boolean }): Record<string, string> {
-  const attrs: Record<string, string> = {};
+  const attrs = noAttrs();
   const n = s.length;
   let p = 0;
   while (p < n) {
@@ -147,7 +152,13 @@ export class XmlTokenizer {
     const lim = d.over ? n : Math.min(n, i + MAX_TAG + 1 - d.size);
     for (; j < lim; j++) {
       const c = buf.charCodeAt(j);
-      if (mode === 1) { if (c === GT && c1 === DASH && c2 === DASH) mode = 0; } else if (mode === 2) { if (c === GT && c1 === QMARK) mode = 0; } else if (quote) { if (c === quote) quote = 0; } else if (c === DQUOTE || c === SQUOTE) quote = c;
+      if (mode === 1) {
+        if (c === GT && c1 === DASH && c2 === DASH) mode = 0;
+      } else if (mode === 2) {
+        if (c === GT && c1 === QMARK) mode = 0;
+      } else if (quote) {
+        if (c === quote) quote = 0;
+      } else if (c === DQUOTE || c === SQUOTE) quote = c;
       else if (sub) {
         if (c === DASH && c1 === DASH && c2 === BANG && c3 === LT) mode = 1; // <!--
         else if (c === QMARK && c1 === LT) mode = 2; // <?
@@ -260,7 +271,9 @@ export class XmlTokenizer {
         i = this.skipDoctype(buf, i, n);
         if (d.done) this.dtd = null;
         else if (!d.over && d.size > MAX_TAG) { // same guard as every other construct: report it once, then discard the rest
-          out.push({ type: 'error', message: 'declaration is unterminated or too long, skipping it', code: 'unterminated-declaration', params: {}, line: d.line });
+          out.push({
+            type: 'error', message: 'declaration is unterminated or too long, skipping it', code: 'unterminated-declaration', params: {}, line: d.line,
+          });
           d.over = true;
         }
         if (i >= n) break;
@@ -283,7 +296,9 @@ export class XmlTokenizer {
           i = end + 3; continue;
         }
         // possibly-incomplete '<!--' / '<![CDATA[' prefix at buffer end: wait for more data
-        if (n - i < 9 && ('<!--'.startsWith(buf.slice(i, Math.min(i + 4, n))) || '<![CDATA['.startsWith(buf.slice(i, n)) || '<!DOCTYPE'.startsWith(buf.slice(i, n)))) break;
+        if (n - i < 9 && (
+          '<!--'.startsWith(buf.slice(i, Math.min(i + 4, n))) || '<![CDATA['.startsWith(buf.slice(i, n)) || '<!DOCTYPE'.startsWith(buf.slice(i, n))
+        )) break;
         if (buf.startsWith('<!DOCTYPE', i)) {
           const line = this.sink.span('doctype', buf.slice(i, i + 9), true);
           this.dtd = { line, size: 9, done: false, over: false, quote: 0, sub: false, mode: 0, c1: 0, c2: 0, c3: 0 };
@@ -312,7 +327,10 @@ export class XmlTokenizer {
           const line = this.sink.span('bad', buf.slice(i, next === -1 ? n : next), next === -1);
           out.push(end === -2
             ? { type: 'error', message: 'unterminated markup', code: 'unterminated-markup', params: {}, line }
-            : { type: 'error', message: `markup longer than ${MAX_TAG.toLocaleString('en-US')} characters`, code: 'markup-too-long', params: { max: MAX_TAG }, line });
+            : {
+              type: 'error', message: `markup longer than ${MAX_TAG.toLocaleString('en-US')} characters`,
+              code: 'markup-too-long', params: { max: MAX_TAG }, line,
+            });
           if (next === -1) { this.garbage = true; i = n; break; }
           i = next; continue;
         }
@@ -324,7 +342,12 @@ export class XmlTokenizer {
           let name = raw.slice(1);
           if (!isName(name)) name = name.trim();
           if (isName(name)) out.push({ type: 'close', name, line: startLine });
-          else out.push({ type: 'error', message: `malformed closing tag </${raw.slice(1, 64)}>`, code: 'malformed-close-tag', params: { tag: raw.slice(1, 64) }, line: startLine });
+          else {
+            out.push({
+              type: 'error', message: `malformed closing tag </${raw.slice(1, 64)}>`, code: 'malformed-close-tag',
+              params: { tag: raw.slice(1, 64) }, line: startLine,
+            });
+          }
         } else {
           const selfClosing = raw.endsWith('/');
           const body = selfClosing ? raw.slice(0, -1) : raw;
@@ -337,13 +360,19 @@ export class XmlTokenizer {
           if (nameEnd > 0 && (sp === -1 || isSpace(body.charCodeAt(sp)))) {
             const startLine = this.sink.span(selfClosing ? 'self' : 'open', tag);
             const seen = { bare: 0, lt: false };
-            const attrs = sp === -1 ? {} : parseAttrs(body.slice(sp), seen);
+            const attrs = sp === -1 ? noAttrs() : parseAttrs(body.slice(sp), seen);
             this.bare += seen.bare;
-            if (seen.lt) out.push({ type: 'error', message: `malformed tag <${raw.slice(0, 64)}>`, code: 'malformed-tag', params: { tag: raw.slice(0, 64) }, line: startLine });
+            if (seen.lt) {
+              out.push({
+                type: 'error', message: `malformed tag <${raw.slice(0, 64)}>`, code: 'malformed-tag', params: { tag: raw.slice(0, 64) }, line: startLine,
+              });
+            }
             out.push({ type: 'open', name, attrs, selfClosing, line: startLine });
           } else {
             const startLine = this.sink.span('bad', tag);
-            out.push({ type: 'error', message: `malformed tag <${raw.slice(0, 64)}>`, code: 'malformed-tag', params: { tag: raw.slice(0, 64) }, line: startLine });
+            out.push({
+              type: 'error', message: `malformed tag <${raw.slice(0, 64)}>`, code: 'malformed-tag', params: { tag: raw.slice(0, 64) }, line: startLine,
+            });
           }
         }
         continue;

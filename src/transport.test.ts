@@ -30,6 +30,14 @@ describe('transport', () => {
     expect(failed.finalUrl).toBe('https://example.com/b.xml');
   });
 
+  it('a finalUrl that is not an absolute http(s) URL falls back to the requested URL', async () => {
+    for (const finalUrl of ['final.xml', '/final.xml', 'javascript:alert(1)', 'https://', 'not a url']) {
+      const r = await fetchTextStream('https://example.com/a.xml', { transport: stub(xml, { finalUrl }) });
+      expect(r.finalUrl, finalUrl).toBe('https://example.com/a.xml');
+      await r.stream?.cancel();
+    }
+  });
+
   it('probe range reaches the transport', async () => {
     const transport = stub(xml);
     const r = await fetchTextStream('https://example.com/a.xml', { transport, probe: { range: 'bytes=0-2047' } });

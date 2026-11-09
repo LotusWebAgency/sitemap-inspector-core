@@ -185,6 +185,17 @@ describe('SitemapParser', () => {
       expect(over.records.map((r) => r.loc)).toEqual([0, 1, 2, 3, 4, 5].map((i) => `https://a.com/${i}`));
     });
 
+    it('reports no XML error for the construct the hard stop cut, only parse-truncated', () => {
+      const p = new SitemapParser({ onRecords: () => {} }, 2000, { maxUrls: 5 });
+      p.write(`<urlset ${NSU}>`);
+      for (let i = 0; i < 5; i++) p.write(`<url><loc>https://a.com/${i}</loc></url>`);
+      p.write('<url><loc>https://a.com/5</loc></url><url><loc>https://a.com/6</loc></ur'); // the cap trips while a tag is open
+      p.write('l></urlset>'); // ignored: past the stop
+      const result = p.finish();
+      expect(result.truncated).toBe(true);
+      expect(result.issues.filter((i) => i.code === 'xml-error')).toEqual([]);
+    });
+
     it('applies the same cap to index children', () => {
       const exact = fed('sitemapindex', 5);
       expect(exact.result.truncated).toBe(false);

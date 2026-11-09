@@ -1,10 +1,13 @@
 import { capValue, tooManyExample, type ExtensionHit } from './extensions.js';
 import { normalizeParsed, normalizeUrl, parsedLoc } from './normalize.js';
 import { hreflangProblem } from './lang-codes.js';
-import { blockedExample, compileRobots, matchRobots, robotsMode, robotsPathOf, uncheckedExample, type CompiledRobots, type MatchMeter, type RobotsMode } from './robots.js';
+import {
+  blockedExample, compileRobots, matchRobots, robotsMode, robotsPathOf, uncheckedExample,
+  type CompiledRobots, type MatchMeter, type RobotsMode,
+} from './robots.js';
 import { DUPLICATE_BIT, rowFlag } from './row-flags.js';
 import { MAX_SITEMAP_BYTES, MAX_SITEMAP_URLS, MAX_URL_CHARS } from './sitemap-limits.js';
-import { isValidW3CDate } from './w3c-date.js';
+import { parseW3CDate } from './w3c-date.js';
 import type { ParseResult } from './parser.js';
 import { aliasSiteUrl, isHttpUrl } from './url.js';
 import type { Finding, FindingExample, Params, RobotsInfo, Severity, UrlRecord } from './types.js';
@@ -105,12 +108,16 @@ export const PER_URL_RULES: ReadonlySet<RuleId> = new Set<RuleId>([
 ]);
 
 // What servers send for sitemap files (XML, gzip, generic binary or text). Search engines document no required type.
-const SITEMAP_TYPES = new Set(['application/xml', 'text/xml', 'application/gzip', 'application/x-gzip', 'application/octet-stream', 'binary/octet-stream', 'application/x-gzip-compressed', 'text/plain']);
+const SITEMAP_TYPES = new Set([
+  'application/xml', 'text/xml', 'application/gzip', 'application/x-gzip', 'application/octet-stream',
+  'binary/octet-stream', 'application/x-gzip-compressed', 'text/plain',
+]);
 const XML_SUBTYPE = /^application\/[\w.+-]+\+xml$/; // input is a mediaType() value, ≤ 100 chars
 const GOOGLEBOT = 'Googlebot'; // robots-blocked is reported for this crawler; callers can evaluate other crawlers with compileRobots
 
 const entryCount = (parse: ParseResult): number => (parse.kind === 'sitemapindex' ? parse.children.length + (parse.childOverflow ?? 0) : parse.stats.urlCount);
-const outsidePathMessage = (url: string, dir: string): string => `${url} is outside the sitemap's directory (${dir}); it only counts if the sitemap is listed in robots.txt or submitted in Search Console`;
+const outsidePathMessage = (url: string, dir: string): string =>
+  `${url} is outside the sitemap's directory (${dir}); it only counts if the sitemap is listed in robots.txt or submitted in Search Console`;
 
 export class ValidationRun {
   private findings = new Map<string, Finding>();
@@ -162,12 +169,15 @@ export class ValidationRun {
       this.rowFlags = 0;
       const ex = { value: r.loc, line: r.line };
       const u = parsedLoc(r);
-      const site = u ? aliasSiteUrl(u, this.ctx.origin, this.ctx.siteAliases) : u; // the loc as the site's own URL: host, path and robots checks use it, the hreflang and utm checks the loc as written
+      // the loc as the site's own URL: host, path and robots checks use it, the hreflang and utm checks the loc as written
+      const site = u ? aliasSiteUrl(u, this.ctx.origin, this.ctx.siteAliases) : u;
       let crossHost = false;
       if (!site || (site.protocol !== 'http:' && site.protocol !== 'https:')) this.hit('invalid-loc', ex);
       else if (site.protocol !== this.scheme || site.host !== this.host) { this.hit('cross-host', ex); crossHost = true; }
       else if (this.dir !== null && !site.pathname.startsWith(this.dir)) {
-        this.hit('outside-sitemap-path', { value: outsidePathMessage(r.loc, this.dir), line: r.line, code: 'outside-sitemap-path', params: { url: r.loc, dir: this.dir } });
+        this.hit('outside-sitemap-path', {
+          value: outsidePathMessage(r.loc, this.dir), line: r.line, code: 'outside-sitemap-path', params: { url: r.loc, dir: this.dir },
+        });
       }
       if (parserMarks & DUPLICATE_BIT) this.hit('duplicate-urls', ex);
       if (r.loc.includes('�')) this.hit('invalid-utf8', ex);
@@ -176,11 +186,15 @@ export class ValidationRun {
       if (r.changefreq && !CHANGEFREQ.has(r.changefreq)) this.hit('invalid-changefreq', { value: r.changefreq, line: r.line });
       if (r.priority !== undefined) {
         const p = Number(r.priority);
-        if (r.priority.length > MAX_PRIORITY_LENGTH || !PRIORITY_RE.test(r.priority) || Number.isNaN(p) || p < 0 || p > 1) this.hit('invalid-priority', { value: r.priority, line: r.line });
+        if (r.priority.length > MAX_PRIORITY_LENGTH || !PRIORITY_RE.test(r.priority) || Number.isNaN(p) || p < 0 || p > 1) {
+          this.hit('invalid-priority', { value: r.priority, line: r.line });
+        }
       }
       this.recordWarnings(r, u, site, crossHost);
       if (site && (site.protocol === 'http:' || site.protocol === 'https:')) this.checkRobots(r, site);
-      if (r.images !== undefined && r.images > MAX_IMAGES_PER_URL) this.hit('image-too-many', { ...tooManyExample('image:image', r.images, MAX_IMAGES_PER_URL), line: r.line });
+      if (r.images !== undefined && r.images > MAX_IMAGES_PER_URL) {
+        this.hit('image-too-many', { ...tooManyExample('image:image', r.images, MAX_IMAGES_PER_URL), line: r.line });
+      }
       while (next < ext.length) {
         const h = ext[next];
         if (!h || h.recordIx > i) break;
@@ -199,8 +213,9 @@ export class ValidationRun {
   }
 
   private checkLastmod(lastmod: string, line: number): void {
-    if (!isValidW3CDate(lastmod)) this.hit('invalid-lastmod', { value: lastmod, line });
-    else if (Date.parse(lastmod) > this.ctx.now + 86_400_000) this.hit('future-lastmod', { value: lastmod, line });
+    const t = parseW3CDate(lastmod); // memoized with the parser's read of the same value
+    if (Number.isNaN(t)) this.hit('invalid-lastmod', { value: lastmod, line });
+    else if (t > this.ctx.now + 86_400_000) this.hit('future-lastmod', { value: lastmod, line });
   }
 
   private recordWarnings(r: UrlRecord, u: URL | null, site: URL | null, crossHost: boolean): void {
@@ -208,7 +223,9 @@ export class ValidationRun {
     // is a sitemap that sits on another variant than the site origin the run started from (say it redirected from
     // example.com to www.example.com): its own URLs then mix with that origin.
     if (site && !crossHost && (site.protocol === 'http:' || site.protocol === 'https:') && stripWww(site.hostname) === this.originHost) {
-      if (site.protocol !== this.originScheme || site.hostname.startsWith('www.') !== this.originHasWww) this.hit('protocol-www-mix', { value: r.loc, line: r.line });
+      if (site.protocol !== this.originScheme || site.hostname.startsWith('www.') !== this.originHasWww) {
+        this.hit('protocol-www-mix', { value: r.loc, line: r.line });
+      }
     }
     if (u) for (const k of u.searchParams.keys()) if (k.startsWith('utm_')) { this.hit('tracking-params', { value: r.loc, line: r.line }); break; }
     if (r.alternates?.some((a) => a.hreflang) === true) this.withAlternates++;
@@ -254,13 +271,16 @@ export class ValidationRun {
       const map = {
         'xml-error': 'xml-parse-error', 'root-element': 'invalid-root', 'namespace': 'missing-namespace', 'loc-missing': 'missing-loc',
         'encoding-not-utf8': 'encoding-not-utf8', 'duplicate-field': 'duplicate-field', 'wrong-entry-kind': 'wrong-entry-kind',
-        'misplaced-element': 'misplaced-element', 'alternate-wrong-namespace': 'alternate-wrong-namespace', 'extension-namespace-unknown': 'extension-namespace-unknown',
+        'misplaced-element': 'misplaced-element', 'alternate-wrong-namespace': 'alternate-wrong-namespace',
+        'extension-namespace-unknown': 'extension-namespace-unknown',
       } as const;
       this.hit(map[i.code], { value: i.message, ...(i.line === undefined ? {} : { line: i.line }), code: i.detail, params: i.params });
     }
     if (parse.truncated) {
       const n = entryCount(parse);
-      this.hit('parse-truncated', { value: `stopped after ${n.toLocaleString('en-US')} ${n === 1 ? 'entry' : 'entries'}`, code: 'stopped-after', params: { count: n } });
+      this.hit('parse-truncated', {
+        value: `stopped after ${n.toLocaleString('en-US')} ${n === 1 ? 'entry' : 'entries'}`, code: 'stopped-after', params: { count: n },
+      });
     }
     const entries = entryCount(parse); // <url> entries of a urlset, <sitemap> entries of an index
     if (entries > MAX_SITEMAP_URLS) this.hit('too-many-urls', { value: String(entries) });
@@ -296,20 +316,30 @@ export class ValidationRun {
       const pct = Math.round(parse.stats.topLastmodShare * 100);
       this.hit('fake-freshness', { value: `${pct}% identical`, code: 'identical-share', params: { percent: pct } });
     }
-    const signals = [parse.stats.lastmodMax ? Date.parse(parse.stats.lastmodMax) : NaN, ctx.httpLastModified ? Date.parse(ctx.httpLastModified) : NaN].filter((x) => !Number.isNaN(x));
-    if (signals.length && Math.max(...signals) < ctx.now - 365 * 86_400_000) this.hit('stale-sitemap', { value: new Date(Math.max(...signals)).toISOString().slice(0, 10) });
+    const signals = [
+      parse.stats.lastmodMax ? Date.parse(parse.stats.lastmodMax) : NaN,
+      ctx.httpLastModified ? Date.parse(ctx.httpLastModified) : NaN,
+    ].filter((x) => !Number.isNaN(x));
+    if (signals.length && Math.max(...signals) < ctx.now - 365 * 86_400_000) {
+      this.hit('stale-sitemap', { value: new Date(Math.max(...signals)).toISOString().slice(0, 10) });
+    }
     if (ctx.redirected) this.hit('redirected-sitemap', { value: `${ctx.sitemapUrl} → ${ctx.finalUrl}` });
     if (this.withoutAlternates > 0 && this.withAlternates >= this.withoutAlternates) {
       const f = this.hit('hreflang-missing');
       f.count = this.withoutAlternates;
       f.examples = this.missingAlternates.map(capExample);
     }
-    if (ctx.contentType && !SITEMAP_TYPES.has(ctx.contentType) && !XML_SUBTYPE.test(ctx.contentType)) this.hit('unexpected-content-type', { value: ctx.contentType });
+    if (ctx.contentType && !SITEMAP_TYPES.has(ctx.contentType) && !XML_SUBTYPE.test(ctx.contentType)) {
+      this.hit('unexpected-content-type', { value: ctx.contentType });
+    }
     if (parse.kind === 'urlset' ? parse.stats.urlCount === 0 : parse.kind === 'sitemapindex' && parse.children.length === 0) this.hit('empty-sitemap');
     if (parse.stats.hasPriority || parse.stats.hasChangefreq) this.hit('priority-changefreq-ignored');
     const withoutXDefault = parse.stats.clustersWithoutXDefault;
     if (withoutXDefault !== undefined) {
       if (withoutXDefault > 0) this.hit('no-xdefault').count = withoutXDefault; // decided per hreflang cluster
-    } else if (parse.stats.clusterCount > 0 && !parse.stats.languages.some((l) => l.toLowerCase() === 'x-default')) this.hit('no-xdefault'); // stats without the per-cluster count (older shape)
+    } else if (parse.stats.clusterCount > 0 && !parse.stats.languages.some((l) => l.toLowerCase() === 'x-default')) {
+      // stats without the per-cluster count (older shape)
+      this.hit('no-xdefault');
+    }
   }
 }

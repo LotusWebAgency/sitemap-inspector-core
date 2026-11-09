@@ -76,7 +76,11 @@ function check(value: string): CodeProblem | null {
   }
   if (region === undefined) return null;
   if (NUMERIC.test(region)) {
-    return { code: 'hreflang-numeric-region', params: { value, region }, message: `${value}: numeric region "${region}" (UN M.49); use a two-letter country code` };
+    return {
+      code: 'hreflang-numeric-region',
+      params: { value, region },
+      message: `${value}: numeric region "${region}" (UN M.49); use a two-letter country code`,
+    };
   }
   if (region.toUpperCase() === 'UK') {
     const suggestion = value.slice(0, -2) + (region === 'UK' ? 'GB' : 'gb');

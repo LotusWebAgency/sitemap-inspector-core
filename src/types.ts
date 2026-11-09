@@ -75,7 +75,9 @@ export interface RobotsInfo {
   sitemapUrls: string[];
   status?: number;           // HTTP status of the robots.txt fetch; absent in older result data
   groups?: RobotsGroup[];    // crawler access rules, present when found; absent in older result data
-  capped?: boolean;          // groups, rules or lines past the caps (500 / 5,000 / 2,048-char path / 512 KiB read) were dropped, so every verdict for that robots.txt is reported as robots-unverified, never blocked or allowed
+  // groups, rules or lines past the caps (500 / 5,000 / 2,048-char path / 512 KiB read) were dropped,
+  // so every verdict for that robots.txt is reported as robots-unverified, never blocked or allowed
+  capped?: boolean;
 }
 
 

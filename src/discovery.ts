@@ -40,7 +40,15 @@ export interface Discovered {
   size?: number | null; sizeCompressed?: true; // from the sniff's ranged request, see SniffResult
 }
 export type FailedRobotsReason = Exclude<SniffKind, 'urlset' | 'sitemapindex'> | 'time-limit';
-export interface DiscoveryResult { found: Discovered[]; failedRobots: { url: string; reason: FailedRobotsReason; status?: number | undefined; encoding?: string | undefined }[] }
+export interface DiscoveryResult {
+  found: Discovered[];
+  failedRobots: {
+    url: string;
+    reason: FailedRobotsReason;
+    status?: number | undefined;
+    encoding?: string | undefined;
+  }[];
+}
 export interface DiscoveryDeps { sniff: typeof sniffSitemap }
 // tabUrl and pageLinks are hints from the page being inspected (the caller validates them first); both are optional.
 export interface DiscoveryOptions {
@@ -52,7 +60,12 @@ export interface DiscoveryOptions {
   tabUrl?: string | undefined; pageLinks?: readonly string[] | undefined;
 }
 
-export async function discoverSitemaps(origin: string, robots: RobotsInfo | null, deps: DiscoveryDeps = { sniff: sniffSitemap }, opts: DiscoveryOptions = {}): Promise<DiscoveryResult> {
+export async function discoverSitemaps(
+  origin: string,
+  robots: RobotsInfo | null,
+  deps: DiscoveryDeps = { sniff: sniffSitemap },
+  opts: DiscoveryOptions = {},
+): Promise<DiscoveryResult> {
   const { deadline = Infinity, now = Date.now, tabUrl, pageLinks = [], signal, transport } = opts;
   const sniffOpts: FetchOptions = { ...(signal ? { signal } : {}), ...(transport ? { transport } : {}) };
   const robotsUrls = robots?.sitemapUrls ?? [];
@@ -72,7 +85,7 @@ export async function discoverSitemaps(origin: string, robots: RobotsInfo | null
   const limit = pLimit(6);
   const sniffed = await Promise.all(candidates.map((c) => limit(async (): Promise<{ c: typeof c; r: SniffResult | null }> => {
     if (now() > deadline || signal?.aborted === true) return { c, r: null };
-    try { return { c, r: await (signal || transport ? deps.sniff(c.url, sniffOpts) : deps.sniff(c.url)) }; } catch { return { c, r: { sniff: 'network-error' } }; }
+    try { return { c, r: await deps.sniff(c.url, sniffOpts) }; } catch { return { c, r: { sniff: 'network-error' } }; }
   })));
   const found: Discovered[] = [];
   const failedRobots: DiscoveryResult['failedRobots'] = [];
@@ -87,12 +100,18 @@ export async function discoverSitemaps(origin: string, robots: RobotsInfo | null
       found.push({
         url: c.url, finalUrl, ...(longFinalOrigin === undefined ? {} : { longFinalOrigin }), source: c.source, kind: r.sniff,
         gzip: r.gzip ?? false, httpStatus: r.status ?? 200,
-        redirected: r.redirected ?? false, httpLastModified: r.lastModified !== undefined && r.lastModified.length <= MAX_HTTP_LAST_MODIFIED_CHARS ? r.lastModified : undefined,
+        // fetchTextStream drops a header past the cap already; kept here too, since `deps.sniff` can be anything
+        redirected: r.redirected ?? false,
+        httpLastModified: r.lastModified !== undefined && r.lastModified.length <= MAX_HTTP_LAST_MODIFIED_CHARS
+          ? r.lastModified
+          : undefined,
         contentType: mediaType(r.contentType),
         ...(r.size === undefined ? {} : { size: r.size }), ...(r.sizeCompressed ? { sizeCompressed: true as const } : {}),
       });
     } else if (robotsListed.has(c.url)) {
-      failedRobots.push(r ? { url: c.url, reason: r.sniff as FailedRobotsReason, status: r.status, encoding: r.encoding } : { url: c.url, reason: 'time-limit' });
+      failedRobots.push(r
+        ? { url: c.url, reason: r.sniff as FailedRobotsReason, status: r.status, encoding: r.encoding }
+        : { url: c.url, reason: 'time-limit' });
     }
   }
   return { found, failedRobots };

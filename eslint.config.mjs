@@ -1,4 +1,5 @@
 import js from '@eslint/js';
+import { defineConfig } from 'eslint/config';
 import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
@@ -26,11 +27,11 @@ const offDomGlobals = ['window', 'document', 'localStorage', 'sessionStorage', '
   message: `\`${name}\` does not exist where the engine runs: keep it out of src/`,
 }));
 
-export default tseslint.config(
+export default defineConfig(
   { ignores: ['dist/**', 'coverage/**', 'node_modules/**'] },
   js.configs.recommended,
-  ...tseslint.configs.strictTypeChecked,
-  ...tseslint.configs.stylisticTypeChecked,
+  tseslint.configs.strictTypeChecked,
+  tseslint.configs.stylisticTypeChecked,
   {
     files: ['**/*.ts', '**/*.mts'],
     languageOptions: {
@@ -65,6 +66,8 @@ export default tseslint.config(
     ignores: ['**/*.test.ts'],
     rules: {
       'no-restricted-globals': ['error', ...bannedGlobals, ...offDomGlobals],
+      // Hostile-input code is reviewed line by line: wrap before 160 columns.
+      'max-len': ['error', { code: 160, ignoreUrls: true, ignoreRegExpLiterals: true }],
     },
   },
   {

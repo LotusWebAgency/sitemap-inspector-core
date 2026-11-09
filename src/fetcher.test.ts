@@ -63,6 +63,16 @@ describe('fetchTextStream', () => {
     });
     expect(await drain(r.stream!)).toBe('<urlset></urlset>');
   });
+  it('drops a Last-Modified header longer than 64 characters and keeps one of exactly 64', async () => {
+    mockFetch(byteStream(enc('<urlset/>')), { headers: { 'last-modified': 'x'.repeat(65) } });
+    const long = await fetchTextStream('https://a.com/sitemap.xml');
+    expect(long.lastModified).toBeUndefined();
+    await long.stream?.cancel();
+    mockFetch(byteStream(enc('<urlset/>')), { headers: { 'last-modified': 'x'.repeat(64) } });
+    const exact = await fetchTextStream('https://a.com/sitemap.xml');
+    expect(exact.lastModified).toBe('x'.repeat(64));
+    await exact.stream?.cancel();
+  });
   it('asks for the url without credentials, following redirects, past the HTTP cache', async () => {
     mockFetch(byteStream(enc('<urlset/>')));
     await drain((await fetchTextStream('https://a.com/sitemap.xml')).stream!);

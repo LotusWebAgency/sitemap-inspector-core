@@ -3,7 +3,7 @@
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "target": "ESNext",
+    "target": "ES2024",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "lib": ["ES2024", "DOM", "DOM.Iterable"],
