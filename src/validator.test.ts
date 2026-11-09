@@ -111,7 +111,7 @@ describe('error rules', () => {
     expect(f.find((x) => x.ruleId === 'invalid-priority')!.count).toBe(1);
   });
   it('accepts any xsd:decimal from 0 to 1 as a priority', () => {
-    const good = ['1.', '+0.5', '-0', '.5', '0', '1', '1.0', '0.000000000000000000001', '1.000000000000000000000', '+.25', '-0.0', '0.' + '0'.repeat(62)]; // the last one is 64 characters
+    const good = ['1.', '+0.5', '-0', '.5', '0', '1', '1.0', '0.000000000000000000001', '1.000000000000000000000', '+.25', '-0.0', '0.' + '0'.repeat(62), '00.5', '01', '000']; // the last one is 64 characters
     const bad = ['1.1', '-0.1', '+1.5', '', '.', '+', '1e0', '0x1', '0.5.5', ' 0.5', '1,0', '0.' + '0'.repeat(63), '0.' + '0'.repeat(70)]; // 65 characters is one too many
     expect(run(good.map((p, i) => rec(`https://a.com/g${i}`, { priority: p })))).toEqual([]);
     const f = run(bad.map((p, i) => rec(`https://a.com/b${i}`, { priority: p })));
@@ -793,5 +793,204 @@ describe('site aliases', () => {
     const blog = aliased({ sitemapUrl: `${LOCAL}/blog/sitemap.xml`, finalUrl: `${LOCAL}/blog/sitemap.xml` });
     const f = run([rec('https://prod.example/blog/p'), rec('https://prod.example/shop/q')], emptyParse(), blog);
     expect(f.find((x) => x.ruleId === 'outside-sitemap-path')).toMatchObject({ count: 1 });
+  });
+});
+
+describe('changefreq values', () => {
+  const changefreqs = (values: string[]) => run(values.map((changefreq, i) => rec(`https://a.com/${i}`, { changefreq })));
+
+  it('accepts each of the seven values', () => {
+    expect(changefreqs(['always', 'hourly', 'daily', 'weekly', 'monthly', 'yearly', 'never'])).toEqual([]);
+  });
+
+  it('rejects anything else, case and padding included', () => {
+    const bad = ['Daily', 'WEEKLY', ' daily', 'monthly ', 'week', 'dailyy', 'biweekly', 'sometimes'];
+    const f = changefreqs(bad);
+    expect(f.map((x) => [x.ruleId, x.count])).toEqual([['invalid-changefreq', bad.length]]);
+    expect(f[0]!.examples.map((e) => e.value)).toEqual(bad.slice(0, 5));
+  });
+});
+
+describe('protocol-www-mix variants', () => {
+  const noRobots = { found: false, url: 'https://a.com/robots.txt', sitemapUrls: [] };
+  const mixCtx = (origin: string, finalUrl: string) => baseCtx({ origin, sitemapUrl: origin + '/sitemap.xml', finalUrl, redirected: origin + '/sitemap.xml' !== finalUrl, robots: noRobots });
+  const mixed = (origin: string, finalUrl: string, loc: string) => run([rec(loc)], emptyParse(), mixCtx(origin, finalUrl)).map((f) => [f.ruleId, f.count]);
+
+  it('stays silent for a www origin whose sitemap and URLs are on www too', () => {
+    expect(mixed('https://www.a.com', 'https://www.a.com/sitemap.xml', 'https://www.a.com/x')).toEqual([]);
+  });
+
+  it('flags a non-www sitemap and URLs under a www origin, as the reverse of the non-www origin', () => {
+    expect(mixed('https://www.a.com', 'https://a.com/sitemap.xml', 'https://a.com/x')).toEqual([['protocol-www-mix', 1], ['redirected-sitemap', 1]]);
+    expect(mixed('https://a.com', 'https://www.a.com/sitemap.xml', 'https://www.a.com/x')).toEqual([['protocol-www-mix', 1], ['redirected-sitemap', 1]]);
+  });
+
+  it('flags a scheme that differs from the origin in either direction', () => {
+    expect(mixed('https://a.com', 'http://a.com/sitemap.xml', 'http://a.com/x')).toEqual([['protocol-www-mix', 1], ['redirected-sitemap', 1]]);
+    expect(mixed('http://a.com', 'https://a.com/sitemap.xml', 'https://a.com/x')).toEqual([['protocol-www-mix', 1], ['redirected-sitemap', 1]]);
+    expect(mixed('http://www.a.com', 'https://a.com/sitemap.xml', 'https://a.com/x')).toEqual([['protocol-www-mix', 1], ['redirected-sitemap', 1]]);
+  });
+
+  it('does not compare a sitemap that moved to another domain with the origin', () => {
+    expect(mixed('https://a.com', 'https://www.b.com/sitemap.xml', 'https://www.b.com/x')).toEqual([['redirected-sitemap', 1]]);
+    expect(mixed('https://a.com', 'http://b.com/sitemap.xml', 'http://b.com/x')).toEqual([['redirected-sitemap', 1]]);
+  });
+
+  it('strips only a leading www. when it matches hosts', () => {
+    expect(mixed('http://x.a.com', 'https://x.www.a.com/sitemap.xml', 'https://x.www.a.com/p')).toEqual([['redirected-sitemap', 1]]);
+  });
+});
+
+describe('outside-sitemap-path with a robots.txt listing another sitemap', () => {
+  it('still applies when robots.txt lists a different sitemap, and says so with not-in-robots', () => {
+    const ctx = baseCtx({
+      sitemapUrl: 'https://a.com/blog/sitemap.xml', finalUrl: 'https://a.com/blog/sitemap.xml',
+      robots: { found: true, url: 'https://a.com/robots.txt', sitemapUrls: ['https://a.com/other/sitemap.xml'] },
+    });
+    const f = run([rec('https://a.com/shop/x')], emptyParse(), ctx);
+    expect(f.map((x) => [x.ruleId, x.count])).toEqual([['outside-sitemap-path', 1], ['not-in-robots', 1]]);
+  });
+});
+
+describe('not-in-robots with a redirected sitemap', () => {
+  const redirectedCtx = (sitemapUrls: string[]) => baseCtx({
+    sitemapUrl: 'https://a.com/sitemap.xml', finalUrl: 'https://a.com/new.xml', redirected: true,
+    robots: { found: true, url: 'https://a.com/robots.txt', sitemapUrls },
+  });
+  const redirected = { ruleId: 'redirected-sitemap', severity: 'warning', message: 'Sitemap URL redirects', count: 1, examples: [{ value: 'https://a.com/sitemap.xml → https://a.com/new.xml' }] };
+
+  it('is satisfied by the URL it was requested at', () => {
+    expect(run([], emptyParse(), redirectedCtx(['https://a.com/sitemap.xml']))).toEqual([redirected]);
+  });
+
+  it('is satisfied by the URL it ended up at', () => {
+    expect(run([], emptyParse(), redirectedCtx(['https://a.com/new.xml']))).toEqual([redirected]);
+  });
+
+  it('warns, with the final URL, when robots.txt lists neither', () => {
+    expect(run([], emptyParse(), redirectedCtx(['https://a.com/other.xml']))).toEqual([
+      { ruleId: 'not-in-robots', severity: 'warning', message: 'Sitemap is not referenced in robots.txt', count: 1, examples: [{ value: 'https://a.com/new.xml' }] },
+      redirected,
+    ]);
+  });
+});
+
+describe('stale-sitemap example', () => {
+  it('names the newest of the lastmod and Last-Modified signals', () => {
+    const stale = (lastmodMax: string, httpLastModified: string) =>
+      run([], emptyParse({ stats: { ...emptyParse().stats, lastmodMax } }), baseCtx({ httpLastModified })).map((f) => [f.ruleId, f.examples]);
+    expect(stale('2024-01-01', 'Wed, 01 Jan 2025 00:00:00 GMT')).toEqual([['stale-sitemap', [{ value: '2025-01-01' }]]]);
+    expect(stale('2025-03-01', 'Mon, 01 Jan 2024 00:00:00 GMT')).toEqual([['stale-sitemap', [{ value: '2025-03-01' }]]]);
+  });
+});
+
+describe('empty-sitemap for an unrecognized root', () => {
+  it('leaves a parse of unknown kind to invalid-root, never calling it empty', () => {
+    const parse = emptyParse({ kind: 'unknown', stats: { ...emptyParse().stats, urlCount: 0 } });
+    expect(run([], parse)).toEqual([]);
+  });
+});
+
+describe('hreflang edge cases', () => {
+  it('counts a URL as having alternates when any one of its links names a language', () => {
+    const records = [
+      rec('https://a.com/1', { alternates: [{ hreflang: '', href: 'https://m.a.com/1' }, { hreflang: 'en', href: 'https://a.com/1' }] }),
+      rec('https://a.com/2', { line: 2 }),
+    ];
+    const f = run(records);
+    expect(f).toEqual([{
+      ruleId: 'hreflang-missing', severity: 'warning', count: 1, examples: [{ value: 'https://a.com/2', line: 2 }],
+      message: "URLs without hreflang alternates, while at least half of this sitemap's URLs have them",
+    }]);
+  });
+
+  it('reports an invalid loc once and does not look for its hreflang self link', () => {
+    const f = run([rec('not a url', { alternates: [{ hreflang: 'en', href: 'https://a.com/x' }, { hreflang: 'zz-INVALID-!!', href: 'https://a.com/y' }] })]);
+    expect(f.map((x) => [x.ruleId, x.count])).toEqual([['invalid-loc', 1], ['invalid-hreflang', 1]]);
+    expect(f[0]!.examples).toEqual([{ value: 'not a url', line: 1 }]);
+  });
+
+  it('takes a self link that matches the loc once normalized, next to others, as the self link', () => {
+    const records = [rec('https://a.com/en/p', { alternates: [{ hreflang: 'de', href: 'https://a.com/de/p' }, { hreflang: 'en', href: 'https://A.com:443/en/p' }] })];
+    expect(run(records)).toEqual([]);
+    expect(records[0]!).not.toHaveProperty('flags');
+  });
+});
+
+describe('robots.txt data variants', () => {
+  const rules = parseRobotsGroups('User-agent: *\nDisallow: /private').groups;
+  const withRobots = (over: Partial<RobotsInfo>): RobotsInfo => ({ found: true, url: 'https://a.com/robots.txt', status: 200, sitemapUrls: ['https://a.com/sitemap.xml'], groups: rules, ...over });
+  const blockedIds = (robots: RobotsInfo) => run([rec('https://a.com/private/x')], emptyParse(), baseCtx({ robots })).map((f) => f.ruleId);
+
+  it('checks URLs against a robots.txt that says capped: false as against one that does not say', () => {
+    expect(blockedIds(withRobots({ capped: false }))).toEqual(['robots-blocked']);
+    expect(blockedIds(withRobots({}))).toEqual(['robots-blocked']);
+    expect(blockedIds(withRobots({ capped: true }))).toEqual(['robots-unverified']);
+  });
+
+  it('starts each run with a zeroed matcher meter that every checked URL adds to', () => {
+    const stepsAfter = (urls: string[]) => {
+      const v = new ValidationRun(baseCtx({ robots: withRobots({}) }));
+      expect(v.robotsMeter).toEqual({ steps: 0 });
+      v.recordBatch(urls.map((u) => rec(u)));
+      return v.robotsMeter.steps;
+    };
+    const one = stepsAfter(['https://a.com/private/1']);
+    expect(Number.isInteger(one) && one !== 0).toBe(true);
+    expect(stepsAfter(['https://a.com/private/1', 'https://a.com/private/2'])).toBe(2 * one);
+  });
+});
+
+describe('content type subtypes', () => {
+  const warned = (contentType: string) => run([], emptyParse(), baseCtx({ contentType })).map((f) => f.ruleId);
+
+  it('accepts application/*+xml and nothing wrapped around it', () => {
+    expect(warned('application/atom+xml')).toEqual([]);
+    expect(warned('application/vnd.x.y-z+xml')).toEqual([]);
+    for (const type of ['x-application/atom+xml', 'application/atom+xml+json', 'application/atom+xmlx', 'text/application/atom+xml']) {
+      expect(warned(type), type).toEqual(['unexpected-content-type']);
+    }
+  });
+});
+
+describe('extension hits shape', () => {
+  it('gives an example without a code or params only its value and line', () => {
+    const v = new ValidationRun(baseCtx());
+    v.recordBatch([rec('https://a.com/1')], [{ recordIx: 0, rule: 'mobile-obsolete', line: 6 }]);
+    expect(v.finish(emptyParse())[0]!.examples).toStrictEqual([{ value: 'https://a.com/1', line: 6 }]);
+  });
+
+  it('gives an issue example without a line no line key', () => {
+    const f = run([], emptyParse({ issues: [{ code: 'xml-error', message: 'bad', detail: 'unterminated-markup', params: {} }] }));
+    expect(f[0]!.examples).toStrictEqual([{ value: 'bad', code: 'unterminated-markup', params: {} }]);
+  });
+
+  it('ignores a hit for a record index below the batch', () => {
+    const v = new ValidationRun(baseCtx());
+    v.recordBatch([rec('https://a.com/1')], [{ recordIx: -1, rule: 'mobile-obsolete', line: 6 }]);
+    expect(v.finish(emptyParse())).toEqual([]);
+  });
+
+  it('maps news language and date hits to errors that flag the row', () => {
+    const records = [rec('https://a.com/n', { line: 4 })];
+    const v = new ValidationRun(baseCtx());
+    v.recordBatch(records, [
+      { recordIx: 0, rule: 'news-invalid-language', line: 5, value: 'english' },
+      { recordIx: 0, rule: 'news-invalid-date', line: 5, value: '2026-08' },
+    ]);
+    expect(v.finish(emptyParse())).toEqual([
+      { ruleId: 'news-invalid-language', severity: 'error', message: 'News languages that are not ISO 639 codes', count: 1, examples: [{ value: 'english', line: 5 }] },
+      { ruleId: 'news-invalid-date', severity: 'error', message: 'News publication dates that are not W3C dates', count: 1, examples: [{ value: '2026-08', line: 5 }] },
+    ]);
+    expect(records[0]!.flags).toBe(rowFlag('news-invalid-language') | rowFlag('news-invalid-date'));
+  });
+
+  it('caps the examples of each issue code at five, counting all of them', () => {
+    const issues = (code: 'xml-error' | 'namespace') => Array.from({ length: 7 }, (_, i) => ({ code, message: `${code}-${i}`, line: i + 1, detail: 'unterminated-markup' as const, params: {} }));
+    const f = run([], emptyParse({ issues: [...issues('xml-error'), ...issues('namespace')] }));
+    expect(f.map((x) => [x.ruleId, x.count, x.examples.map((e) => e.value)])).toEqual([
+      ['xml-parse-error', 7, [0, 1, 2, 3, 4].map((i) => `xml-error-${i}`)],
+      ['missing-namespace', 7, [0, 1, 2, 3, 4].map((i) => `namespace-${i}`)],
+    ]);
   });
 });
