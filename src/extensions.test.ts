@@ -240,7 +240,8 @@ describe('unknownExtensionNamespace', () => {
   });
 
   it('flags a reserved prefix bound to anything else, in any case', () => {
-    for (const [p, u] of [['image', 'https://www.google.com/schemas/sitemap-image/1.1'], ['video', 'urn:x'], ['NEWS', ''], ['mobile', IMAGE_NS], ['xhtml', 'http://www.w3.org/1999/XHTML']] as const) {
+    for (const [p, u] of [['image', 'https://www.google.com/schemas/sitemap-image/1.1'], ['video', 'urn:x'], ['NEWS', ''], ['mobile', IMAGE_NS], ['xhtml', 'http://www.w3.org/1999/XHTML'],
+      ['image', 'urn:x'], ['news', 'urn:x'], ['mobile', 'urn:x'], ['xhtml', 'urn:x']] as const) {
       expect(unknownExtensionNamespace(p, u), `${p}=${u}`).toBe(true);
     }
   });
@@ -258,6 +259,24 @@ describe('unknownExtensionNamespace', () => {
     for (const u of ['http://www.w3.org/TR/xhtml1/', 'http://www.w3.org/1999/xlink', 'http://www.w3.org/2001/XMLSchema-instance', 'http://example.com/xhtml', 'http://example.com/sitemap-image',
       'http://www.google.com/maps', 'http://www.sitemaps.org/schemas/sitemap/0.9', 'urn:sitemap-image', 'not a uri']) {
       expect(unknownExtensionNamespace('x', u), u).toBe(false);
+    }
+  });
+});
+
+describe('unknownExtensionNamespace host and path', () => {
+  it('judges only http(s) URIs on the documented host and path', () => {
+    for (const u of ['ftp://www.google.com/schemas/sitemap-image/1.1', 'ftp://www.w3.org/1999/xhtml', 'file://www.google.com/schemas/sitemap-video/1.1']) {
+      expect(unknownExtensionNamespace('x', u), u).toBe(false);
+    }
+  });
+
+  it('needs both /schema... and sitemap in a www.google.com path, and the /1999/xh path on www.w3.org only', () => {
+    for (const u of ['http://www.google.com/maps/sitemap', 'http://www.google.com/schemas/other', 'http://www.google.com/other/sitemap-image', 'http://www.google.com/',
+      'http://example.com/1999/xhtml', 'http://w3.org/1999/xhtml', 'http://www.w3.org/1998/xhtml']) {
+      expect(unknownExtensionNamespace('x', u), u).toBe(false);
+    }
+    for (const u of ['http://www.google.com/schema/sitemap', 'http://www.google.com/schemas/x/sitemap', 'http://www.w3.org/1999/xh']) {
+      expect(unknownExtensionNamespace('x', u), u).toBe(true);
     }
   });
 });
@@ -309,5 +328,176 @@ describe('ExtensionCollector video urls', () => {
       { rule: 'invalid-extension-url', line: 2, value: '<video:thumbnail_loc>: "data:image/png;base64,xx"', code: 'ext-invalid-value', params: { field: 'video:thumbnail_loc', value: 'data:image/png;base64,xx' } },
       { rule: 'invalid-extension-url', line: 2, value: '<video:player_loc>: "player"', code: 'ext-invalid-value', params: { field: 'video:player_loc', value: 'player' } },
     ]);
+  });
+});
+
+describe('ExtensionCollector element routing', () => {
+  const noLoc = (line: number) => ({ rule: 'invalid-extension-url', line, value: '<image:image> has no <image:loc>', code: 'image-without-loc' });
+
+  it('reports each of the four deprecated image tags, and only in the image namespace', () => {
+    const c = new ExtensionCollector();
+    c.open(IMAGE_NS, 'caption', 2); c.open(IMAGE_NS, 'title', 3); c.open(IMAGE_NS, 'geo_location', 4); c.open(IMAGE_NS, 'license', 5);
+    c.open(IMAGE_NS, 'loc', 6); c.open(VIDEO_NS, 'title', 7); c.open('urn:x', 'license', 8); c.open('urn:x', 'geo_location', 9);
+    expect(c.endUrl()).toStrictEqual([
+      { rule: 'image-deprecated-field', line: 2, value: 'image:caption' },
+      { rule: 'image-deprecated-field', line: 3, value: 'image:title' },
+      { rule: 'image-deprecated-field', line: 4, value: 'image:geo_location' },
+      { rule: 'image-deprecated-field', line: 5, value: 'image:license' },
+    ]);
+  });
+
+  it('reports only <mobile:mobile>, not other mobile tags, other namespaces or a mobile tag elsewhere', () => {
+    const c = new ExtensionCollector();
+    c.open(MOBILE_NS, 'other', 2); c.open('urn:x', 'mobile', 3); c.open(NEWS_NS, 'mobile', 4); c.open(IMAGE_NS, 'mobile', 5); c.open(IMAGE_NS, 'loc', 6);
+    expect(c.endUrl()).toStrictEqual([]);
+    c.open(MOBILE_NS, 'mobile', 7);
+    expect(c.endUrl()).toStrictEqual([{ rule: 'mobile-obsolete', line: 7 }]);
+  });
+
+  it('leaves a hit without a code or params as the bare rule, line and value', () => {
+    const c = new ExtensionCollector();
+    c.emit('mobile-obsolete', 1, { value: 'v' });
+    c.emit('mobile-obsolete', 2);
+    expect(c.endUrl()).toStrictEqual([{ rule: 'mobile-obsolete', line: 1, value: 'v' }, { rule: 'mobile-obsolete', line: 2 }]);
+  });
+
+  it('reads <image:image> and <image:loc> in the image namespace only', () => {
+    const c = new ExtensionCollector();
+    c.open(VIDEO_NS, 'image', 2, true);
+    c.open('urn:x', 'image', 3, true);
+    expect(c.endUrl()).toEqual([]);
+    c.open(IMAGE_NS, 'image', 4);
+    c.open('urn:x', 'loc', 5, true);
+    c.close(IMAGE_NS, 'image');
+    expect(c.endUrl()).toEqual([noLoc(4)]);
+  });
+
+  it('ignores an image tag closed in another namespace', () => {
+    const c = new ExtensionCollector();
+    c.open(IMAGE_NS, 'image', 2);
+    c.close('urn:x', 'image');
+    c.open(IMAGE_NS, 'loc', 3); c.text('/a'); c.close('urn:x', 'loc'); c.text('/b'); c.close(IMAGE_NS, 'loc');
+    c.close(IMAGE_NS, 'image');
+    expect(c.endUrl()).toEqual([
+      { rule: 'invalid-extension-url', line: 3, value: '<image:loc>: "/a/b"', code: 'ext-invalid-value', params: { field: 'image:loc', value: '/a/b' } },
+    ]);
+  });
+
+  it('keeps an image open while its other child tags close', () => {
+    const c = new ExtensionCollector();
+    c.open(IMAGE_NS, 'image', 2);
+    c.open(IMAGE_NS, 'caption', 3); c.close(IMAGE_NS, 'caption');
+    c.open(IMAGE_NS, 'loc', 4); c.text('https://a.com/ok.jpg'); c.close(IMAGE_NS, 'loc');
+    c.close(IMAGE_NS, 'image');
+    expect(c.endUrl()).toEqual([{ rule: 'image-deprecated-field', line: 3, value: 'image:caption' }]);
+  });
+
+  it('trims an invalid image:loc before it becomes the example', () => {
+    const c = new ExtensionCollector();
+    c.open(IMAGE_NS, 'image', 2);
+    c.open(IMAGE_NS, 'loc', 3); c.text('  /rel.jpg\n '); c.close(IMAGE_NS, 'loc');
+    c.close(IMAGE_NS, 'image');
+    expect(c.endUrl()).toEqual([
+      { rule: 'invalid-extension-url', line: 3, value: '<image:loc>: "/rel.jpg"', code: 'ext-invalid-value', params: { field: 'image:loc', value: '/rel.jpg' } },
+    ]);
+  });
+
+  it('reads only the first 2,048 characters of an image:loc', () => {
+    const c = new ExtensionCollector();
+    c.open(IMAGE_NS, 'image', 2);
+    c.open(IMAGE_NS, 'loc', 3); c.text(' '.repeat(2000)); c.text(' '.repeat(100) + 'https://a.com/x.jpg'); c.close(IMAGE_NS, 'loc');
+    c.close(IMAGE_NS, 'image');
+    expect(c.endUrl()).toEqual([
+      { rule: 'invalid-extension-url', line: 3, value: '<image:loc>: ""', code: 'ext-invalid-value', params: { field: 'image:loc', value: '' } },
+    ]);
+  });
+});
+
+describe('ExtensionCollector blocks', () => {
+  const NOW = Date.parse('2026-08-27T12:00:00Z');
+  const missingNews = (line: number) => ['news:publication', 'news:name', 'news:language', 'news:publication_date', 'news:title'].map((value) => ({ rule: 'news-missing-field', line, value }));
+  const validNews = (c: ExtensionCollector, language: (c: ExtensionCollector) => void) => {
+    c.open(NEWS_NS, 'news', 2);
+    c.open(NEWS_NS, 'publication', 2);
+    c.open(NEWS_NS, 'name', 2); c.text('Daily'); c.close(NEWS_NS, 'name');
+    language(c);
+    c.close(NEWS_NS, 'publication');
+    c.open(NEWS_NS, 'publication_date', 2); c.text('2026-08-26'); c.close(NEWS_NS, 'publication_date');
+    c.open(NEWS_NS, 'title', 2); c.text('T'); c.close(NEWS_NS, 'title');
+  };
+
+  it('checks and counts a self-closed block at once, so the next block starts clean', () => {
+    const c = new ExtensionCollector(NOW);
+    c.open(NEWS_NS, 'news', 2, true);
+    c.open(NEWS_NS, 'news', 3, true);
+    expect(c.blockCount('news')).toBe(2);
+    expect(c.endUrl()).toEqual([...missingNews(2), ...missingNews(3)]);
+  });
+
+  it('does not end a block or a captured field on a close in another namespace', () => {
+    const c = new ExtensionCollector(NOW);
+    validNews(c, (k) => { k.open(NEWS_NS, 'language', 2); k.text('e'); k.close('urn:x', 'language'); k.text('n'); k.close(NEWS_NS, 'language'); });
+    c.close('urn:x', 'news');
+    c.open(NEWS_NS, 'title', 3); c.text('Second'); c.close(NEWS_NS, 'title');
+    c.close(NEWS_NS, 'news');
+    expect(c.blockCount('news')).toBe(1);
+    expect(c.endUrl()).toEqual([]);
+  });
+
+  it('stops capturing text once the field has closed', () => {
+    const c = new ExtensionCollector(NOW);
+    validNews(c, (k) => { k.open(NEWS_NS, 'language', 2); k.text('en'); k.close(NEWS_NS, 'language'); k.text(' stray'); });
+    c.close(NEWS_NS, 'news');
+    expect(c.endUrl()).toEqual([]);
+  });
+
+  it('reads only the first 2,048 characters of a block field', () => {
+    const c = new ExtensionCollector(0);
+    c.open(VIDEO_NS, 'video', 3);
+    for (const [name, text] of [['thumbnail_loc', 'https://a.com/t.jpg'], ['title', 'T'], ['description', 'D'], ['content_loc', 'https://a.com/v.mp4']]) {
+      c.open(VIDEO_NS, name!, 4); c.text(text!); c.close(VIDEO_NS, name!);
+    }
+    c.open(VIDEO_NS, 'rating', 5); c.text(' '.repeat(2000)); c.text(' '.repeat(100) + '4'); c.close(VIDEO_NS, 'rating');
+    c.close(VIDEO_NS, 'video');
+    expect(c.endUrl()).toEqual([{
+      rule: 'video-invalid-value', line: 3, value: '<video:rating>: ""', code: 'ext-invalid-value', params: { field: 'video:rating', value: '' },
+    }]);
+  });
+});
+
+describe('video value examples', () => {
+  const video = (fields: [string, string][]) => {
+    const c = new ExtensionCollector(0);
+    c.open(VIDEO_NS, 'video', 3);
+    for (const [name, text] of [['thumbnail_loc', 'https://a.com/t.jpg'], ['title', 'T'], ['description', 'D'], ['content_loc', 'https://a.com/v.mp4'], ...fields]) {
+      c.open(VIDEO_NS, name!, 4); c.text(text!); c.close(VIDEO_NS, name!);
+    }
+    c.close(VIDEO_NS, 'video');
+    return c.endUrl();
+  };
+  const invalid = (field: string, value: string) => ({ rule: 'video-invalid-value', line: 3, value: `<video:${field}>: "${value}"`, code: 'ext-invalid-value', params: { field: `video:${field}`, value } });
+
+  it('names the field and value of each invalid yes/no flag and date', () => {
+    expect(video([['family_friendly', 'maybe'], ['requires_subscription', 'x'], ['live', 'soon']])).toEqual([
+      invalid('family_friendly', 'maybe'), invalid('requires_subscription', 'x'), invalid('live', 'soon'),
+    ]);
+    expect(video([['publication_date', 'yesterday'], ['expiration_date', '2026-13-45']])).toEqual([invalid('publication_date', 'yesterday'), invalid('expiration_date', '2026-13-45')]);
+  });
+
+  it('accepts exactly yes or no, in any case, and nothing around them', () => {
+    expect(video([['family_friendly', 'Yes'], ['requires_subscription', 'NO'], ['live', 'no']])).toEqual([]);
+    for (const v of ['yesterday', 'nothing', 'casino', 'noyes', 'yes no', 'eyes']) expect(video([['live', v]]), v).toEqual([invalid('live', v)]);
+  });
+
+  it('accepts a rating of up to two integer digits and six decimals, nothing around the number', () => {
+    for (const v of ['05', '00.5', '4.55', '4.123456', '0.000001']) expect(video([['rating', v]]), v).toEqual([]);
+    for (const v of ['0x1', '1e0', '0b1', '4.1234567', '100', '10', '1.', '.5', '4abc', 'abc4']) expect(video([['rating', v]]), v).toEqual([invalid('rating', v)]);
+  });
+
+  it('measures the uploader trimmed while it fits the cap, and raw once it does not', () => {
+    expect(video([['uploader', ' '.repeat(10) + 'u'.repeat(250)]])).toEqual([]);
+    expect(video([['uploader', ' '.repeat(1800) + 'u'.repeat(248)]])).toEqual([]); // 2,048 raw characters
+    expect(video([['uploader', 'u'.repeat(256)]])).toEqual([{ rule: 'video-invalid-value', line: 3, ...tooLongExample('video:uploader', 256, 255) }]);
+    expect(video([['uploader', ' '.repeat(1800) + 'u'.repeat(249)]])).toEqual([{ rule: 'video-invalid-value', line: 3, ...tooLongExample('video:uploader', 2049, 255) }]);
   });
 });
