@@ -6,7 +6,7 @@ The extension is described at <https://lotuswebagency.com/extensions/xml-sitemap
 
 ## What is in this package
 
-- Sitemap parsing: a streaming tokenizer and parser for `urlset` and `sitemapindex` documents, including gzip and the image, video, news, mobile and hreflang extensions.
+- Sitemap parsing: a streaming tokenizer and parser for `urlset` and `sitemapindex` documents, including gzip and the image, video, news, mobile and hreflang extensions. A plain-text sitemap (one URL per line, the sitemaps.org "Text" format) is read as a `urlset`; `ParseResult.text` is set for it.
 - Discovery: finding a site's sitemaps from robots.txt, page hints and common paths.
 - robots.txt: fetching, `Sitemap:` lines, rule groups, and a matcher for allow/disallow verdicts.
 - Validation rules: the rule set listed below.
@@ -62,7 +62,7 @@ A custom transport must keep to this contract:
 - Honor `init.signal`. The timeouts work by aborting it, so a transport that ignores it can hang a fetch.
 - `res` carries the upstream status and headers.
 - The body is the bytes after HTTP content-coding is removed. A raw `.gz` file stays gzip and the engine unzips it; br and zstd must already be decoded.
-- `finalUrl` is a non-empty absolute URL. An empty one is replaced by the requested URL.
+- `finalUrl` is an absolute http(s) URL. Anything else (empty, relative, another scheme) is replaced by the requested URL.
 
 ```ts
 import { type Transport, fetchRobots } from '@lotuswebagency/sitemap-inspector-core';
@@ -91,20 +91,29 @@ Every cap the engine applies. Sizes are counted after decompression; "characters
 | CDATA section | 1,048,576 characters, `<![CDATA[` included | Same |
 | Accumulated text run | 65,536 characters | The first 65,536 are kept |
 | Text of one field (`<loc>`, `<lastmod>`, ...) | 8,192 characters | The first 8,192 are kept |
+| Plain-text sitemap line | 4,096 characters | The first 4,096 are kept (a URL that long fails the 2,048-character check anyway) |
 | Extension field value (image, video, news) | 2,048 characters | The first 2,048 are kept |
+| Extension findings per URL | 20 | The rest are dropped |
+| Distinct `<lastmod>` values counted | 1,000 | Values already seen keep counting; new ones are not tracked (affects `fake-freshness` only) |
 | Index children kept | 4,000 entries, each `<loc>` cut to 2,049 characters | The rest are counted in `childOverflow`, not kept |
 | Hreflang alternates per URL | 500 | The rest are dropped |
 | Distinct hreflang languages | 1,000 | |
 | Declared namespace prefixes | 100 | |
 | Structural issues kept per code | 20 | The rest are dropped |
+| Finding example value, string param | 300 characters | Cut, with an ellipsis |
+| XML declaration `encoding` name | 64 characters | Cut |
+| `Last-Modified` header | 64 characters | A longer header is dropped |
+| `Content-Type` media type | 100 characters, one `type/subtype` token | Anything else is dropped by `mediaType` |
 | robots.txt body | 524,288 characters | Cut at the last complete line |
 | robots.txt groups / rules / `Sitemap:` lines | 500 / 5,000 / 500 | The rest are ignored |
 | robots.txt rule path | 2,048 characters | The rule is ignored |
-| robots.txt matching | paths up to 8,192 characters; 300,000,000 steps per `MatchMeter` | The verdict is `over-limit` |
+| robots.txt matching | paths up to 8,192 characters; 300,000,000 steps per `MatchMeter`; 50,000 `*`-separated pattern parts per compiled rule set | The verdict is `over-limit` |
 | Page links used by discovery | 20 | |
 | Timeouts | 30 s idle and 120 s total for a sitemap; 15 s idle and 30 s total for robots.txt and the sniff probe; the gzip trailer probe has one 15 s timer for its whole request | The request is aborted; override with `timeoutMs` and `totalMs`. The trailer probe takes only `timeoutMs` |
 
 The package never follows a sitemap index into its children. Walking an index, and how deep to go, is up to the caller.
+
+Once a hard limit (`maxBytes`, `maxUrls`) is hit, `finish()` reports `parse-truncated` and no XML error for the construct the stop cut; the structure checks that need the whole document (unclosed elements, missing root) are skipped too.
 
 ## Security model
 

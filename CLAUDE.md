@@ -28,4 +28,6 @@ Streaming XML sitemap and robots.txt engine (`@lotuswebagency/sitemap-inspector-
 
 ## Release
 
-`CHANGELOG.md` holds the history. `publishConfig` publishes publicly with provenance, which needs a CI OIDC token and the `repository` field. Version bump, changelog entry, gate, then publish from CI.
+`CHANGELOG.md` holds the history. Version bump, changelog entry, gate, then push a `v<version>` tag: `.github/workflows/release.yml` runs the gate again and `npm publish --provenance` through npm trusted publishing (the package on npmjs.com names this repository and workflow as its trusted publisher; no token is stored). The job checks that the tag matches `package.json`. Never publish by hand: `publishConfig.provenance` needs the CI OIDC token.
+
+Dependencies and actions are updated by Dependabot (`.github/dependabot.yml`); actions are pinned to commit SHAs with the version in a comment.
