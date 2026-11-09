@@ -207,7 +207,10 @@ describe('gzip trailer request', () => {
       for (const [limit, options] of [[15_000, {}], [100, { timeoutMs: 100 }]] as const) {
         const { transport, signals } = recording(hangUntilAborted);
         const run = watch(sniffSitemap(URL_GZ, { transport, ...options }));
-        while (transport.mock.calls.length < 2) await new Promise<void>((resolve) => { setImmediate(resolve); }); // the inflate of the head is real I/O
+        for (let turns = 0; transport.mock.calls.length < 2; turns++) { // the inflate of the head is real I/O
+          if (turns >= 1000) throw new Error(`the trailer request was not sent within 1000 event loop turns (limit ${limit})`);
+          await new Promise<void>((resolve) => { setImmediate(resolve); });
+        }
         await vi.advanceTimersByTimeAsync(limit - 1);
         expect(run.settled, String(limit)).toBe(false);
         await vi.advanceTimersByTimeAsync(1);

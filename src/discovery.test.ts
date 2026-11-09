@@ -14,8 +14,7 @@ describe('pLimit', () => {
     const started: number[] = [];
     const gates = Array.from({ length: 5 }, () => { let open!: () => void; const gate = new Promise<void>((r) => { open = r; }); return { gate, open }; });
     const results = gates.map((g, i) => limit(async () => { started.push(i); await g.gate; return i * 10; }));
-    await Promise.resolve();
-    expect(started).toEqual([0, 1]);
+    await vi.waitFor(() => { expect(started).toEqual([0, 1]); });
     gates[1]!.open();
     await vi.waitFor(() => { expect(started).toEqual([0, 1, 2]); });
     gates[0]!.open(); gates[2]!.open();
@@ -30,8 +29,7 @@ describe('pLimit', () => {
     const started: number[] = [];
     const gates = Array.from({ length: 4 }, () => { let open!: () => void; const gate = new Promise<void>((r) => { open = r; }); return { gate, open }; });
     const results = gates.map((g, i) => limit(async () => { started.push(i); await g.gate; return i; }));
-    await Promise.resolve();
-    expect(started).toEqual([0, 1]);
+    await vi.waitFor(() => { expect(started).toEqual([0, 1]); });
     gates[0]!.open();
     await vi.waitFor(() => { expect(started).toEqual([0, 1, 2]); });
     gates[1]!.open(); gates[2]!.open();

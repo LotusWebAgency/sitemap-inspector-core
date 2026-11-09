@@ -489,7 +489,7 @@ describe('video value examples', () => {
     for (const v of ['yesterday', 'nothing', 'casino', 'noyes', 'yes no', 'eyes']) expect(video([['live', v]]), v).toEqual([invalid('live', v)]);
   });
 
-  it('accepts a rating of up to two integer digits and six decimals, nothing around the number', () => {
+  it('accepts a rating from 0 to 5 with up to six decimals, nothing around the number', () => {
     for (const v of ['05', '00.5', '4.55', '4.123456', '0.000001']) expect(video([['rating', v]]), v).toEqual([]);
     for (const v of ['0x1', '1e0', '0b1', '4.1234567', '100', '10', '1.', '.5', '4abc', 'abc4']) expect(video([['rating', v]]), v).toEqual([invalid('rating', v)]);
   });

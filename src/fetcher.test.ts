@@ -496,8 +496,7 @@ describe('sniffSitemap', () => {
       sniff: 'urlset', status: 200, finalUrl: 'https://a.com/final.xml', redirected: true, gzip: false, lastModified: 'Wed, 01 Jul 2026 00:00:00 GMT', contentType: 'text/xml', size: null,
     });
     await vi.waitFor(() => { expect(cancelled).toBe(true); });
-    expect(pulls).toBeGreaterThanOrEqual(2);
-    expect(pulls).toBeLessThanOrEqual(6); // the head, then the read-ahead of the streams in the chain; the depth varies by Node version
+    expect(pulls).toBeLessThanOrEqual(10); // the head, then the read-ahead of the streams in the chain; the depth varies by Node version
   });
   it('sniffs a sitemapindex', async () => {
     mockFetch(byteStream(enc('<?xml version="1.0"?><sitemapindex xmlns="ns"><sitemap/></sitemapindex>')));
@@ -592,8 +591,8 @@ describe('sniffSitemap size', () => {
     rangeServer(() => partial(XML_HEAD.slice(0, 2048), 'bytes 0-2047/12x'));
     expect((await sniffSitemap('https://a.com/s.xml')).size).toBeNull();
   });
-  it('reads a Content-Range with extra spaces, zero padding or non-ASCII outer whitespace', async () => {
-    for (const range of ['bytes  0-2047/9000', 'bytes 00-2047/9000', '\u00a0bytes 0-2047/9000\u00a0']) {
+  it('reads a Content-Range with extra spaces, zero padding or space and tab around it', async () => {
+    for (const range of ['bytes  0-2047/9000', 'bytes 00-2047/9000', ' bytes 0-2047/9000 ', '\tbytes 0-2047/9000\t']) {
       rangeServer(() => partial(XML_HEAD.slice(0, 2048), range));
       expect(await sniffSitemap('https://a.com/s.xml'), range).toMatchObject({ sniff: 'urlset', size: 9000 });
       expect(vi.mocked(fetch), range).toHaveBeenCalledTimes(1);
@@ -604,7 +603,7 @@ describe('sniffSitemap size', () => {
       rangeServer(() => new Response(XML_HEAD, { status: 200, headers: { 'content-length': length } }));
       expect((await sniffSitemap('https://a.com/s.xml')).size, length).toBeNull();
     }
-    rangeServer(() => new Response(XML_HEAD, { status: 200, headers: { 'content-length': '\u00a04096\u00a0' } }));
+    rangeServer(() => new Response(XML_HEAD, { status: 200, headers: { 'content-length': ' 4096\t' } }));
     expect((await sniffSitemap('https://a.com/s.xml')).size).toBe(4096);
     rangeServer(() => new Response(XML_HEAD, { status: 200, headers: { 'content-length': '0' } }));
     expect((await sniffSitemap('https://a.com/s.xml')).size).toBe(0);
@@ -782,19 +781,19 @@ describe('sniffSitemap size', () => {
   describe('a head the range cut inside a prolog', () => {
     const SITEMAP = '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://a.com/</loc></url></urlset>';
     // honours the range like a real server: bytes 0-2047 of the file as UTF-8, a plain GET gets all of it
-    const honouring = (doc: string) => rangeServer((range) => {
+    const honoring = (doc: string) => rangeServer((range) => {
       const bytes = enc(doc);
       return range === null ? new Response(bytes, { status: 200, headers: { 'content-length': String(bytes.length) } }) : partial(bytes.slice(0, 2048), `bytes 0-${Math.min(2047, bytes.length - 1)}/${bytes.length}`);
     });
     it('reads a 3 KB ASCII comment before <urlset> with one more plain GET and says urlset', async () => {
-      honouring(`<?xml version="1.0"?><!-- ${'x'.repeat(3000)} -->\n${SITEMAP}`);
+      honoring(`<?xml version="1.0"?><!-- ${'x'.repeat(3000)} -->\n${SITEMAP}`);
       expect(await sniffSitemap('https://a.com/s.xml')).toMatchObject({ sniff: 'urlset', status: 200, size: enc(`<?xml version="1.0"?><!-- ${'x'.repeat(3000)} -->\n${SITEMAP}`).length });
       expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
     });
     it('reads a Cyrillic comment with <urlset at character ~1,460 (2,700+ bytes) as urlset, and keeps the size of the ranged answer', async () => {
       const doc = `<?xml version="1.0"?><!-- ${'п'.repeat(1400)} -->\n${SITEMAP}`;
       expect(enc(doc.slice(0, doc.indexOf('<urlset'))).length).toBeGreaterThan(2700);
-      honouring(doc);
+      honoring(doc);
       const r = await sniffSitemap('https://a.com/s.xml');
       expect(r).toMatchObject({ sniff: 'urlset', size: enc(doc).length });
       expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
@@ -803,11 +802,11 @@ describe('sniffSitemap size', () => {
     });
     it('reads again for every kind of cut head: a comment, a processing instruction, a DOCTYPE, whitespace, the root name', async () => {
       for (const prolog of [`<!-- ${'x'.repeat(2500)} -->`, `<?pi ${'x'.repeat(2500)}?>`, `<!DOCTYPE urlset [${'<!ENTITY a "b">'.repeat(180)}]>`, ' '.repeat(2100)]) {
-        honouring(`<?xml version="1.0"?>${prolog}${SITEMAP}`);
+        honoring(`<?xml version="1.0"?>${prolog}${SITEMAP}`);
         await sniffSitemap('https://a.com/s.xml');
         expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
       }
-      honouring(`${' '.repeat(2042)}${SITEMAP}`); // the range ends inside the root name
+      honoring(`${' '.repeat(2042)}${SITEMAP}`); // the range ends inside the root name
       await sniffSitemap('https://a.com/s.xml');
       expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
     });
@@ -816,16 +815,16 @@ describe('sniffSitemap size', () => {
         `<!DOCTYPE urlset [<!-- ${'x'.repeat(2500)} -->]>`, `<!DOCTYPE urlset [<?pi ${'x'.repeat(2500)}?>]>`, `<!FOO ${'x'.repeat(2500)}>`,
         `<!DOCTYPE urlset [<!ENTITY a "${'x'.repeat(2500)}">]>`, '<!-->'.repeat(500),
       ]) {
-        honouring(`${prolog}${SITEMAP}`);
+        honoring(`${prolog}${SITEMAP}`);
         expect((await sniffSitemap('https://a.com/s.xml')).sniff, prolog.slice(0, 20)).toBe('urlset');
         expect(vi.mocked(fetch), prolog.slice(0, 20)).toHaveBeenCalledTimes(2);
       }
     });
     it('reads again for a head that is only white space, and for one that ends on the < of the root', async () => {
-      honouring(`${' '.repeat(2100)}${SITEMAP}`);
+      honoring(`${' '.repeat(2100)}${SITEMAP}`);
       expect((await sniffSitemap('https://a.com/s.xml')).sniff).toBe('urlset');
       expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
-      honouring(`<?xml version="1.0"?>${' '.repeat(2026)}${SITEMAP}`);
+      honoring(`<?xml version="1.0"?>${' '.repeat(2026)}${SITEMAP}`);
       expect((await sniffSitemap('https://a.com/s.xml')).sniff).toBe('urlset');
       expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
     });

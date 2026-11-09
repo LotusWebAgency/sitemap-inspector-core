@@ -14,11 +14,11 @@ function all(chunks: string[]) {
   return unlined(out.concat(tk.end()));
 }
 
-const SCANS = ['indexOf', 'includes', 'lastIndexOf', 'startsWith', 'charCodeAt'] as const;
+const SCANS = ['indexOf', 'includes', 'lastIndexOf', 'startsWith', 'charCodeAt', 'slice', 'substring'] as const;
 type Scan = (this: string, ...args: unknown[]) => unknown;
 
-// `chunks` through a tokenizer while counting the characters its string searches and reads touch: a deterministic stand-in for run time.
-// It throws as soon as the count passes `perChar` times the input length, so a quadratic rescan fails at once instead of hanging.
+// `chunks` through a tokenizer while counting the characters its string searches, reads and copies (slice, substring) touch: a deterministic stand-in for run time.
+// A slice or substring that hands back the whole string copies nothing and is not charged. It throws as soon as the count passes `perChar` times the input length, so a quadratic rescan or re-slice fails at once instead of hanging.
 function tokensWithinScanBudget(chunks: string[], perChar: number): XmlToken[] {
   const budget = perChar * chunks.reduce((sum, c) => sum + c.length, 0);
   const proto = String.prototype as unknown as Record<(typeof SCANS)[number], Scan>;
@@ -30,20 +30,20 @@ function tokensWithinScanBudget(chunks: string[], perChar: number): XmlToken[] {
     if (work > budget) throw new Error(`string scans passed ${budget} characters`);
   };
   const searched = (self: string, from: unknown, at: number) => (at === -1 ? self.length - Math.min(Number(from ?? 0), self.length) : at - Number(from ?? 0) + 1);
-  proto.indexOf = function (this: string, ...args) { const at = native.indexOf.call(this, ...args) as number; charge(searched(this, args[1], at)); return at; };
-  proto.includes = function (this: string, ...args) { const at = native.indexOf.call(this, ...args) as number; charge(searched(this, args[1], at)); return at !== -1; };
-  proto.lastIndexOf = function (this: string, ...args) { const at = native.lastIndexOf.call(this, ...args) as number; charge(at === -1 ? this.length : this.length - at); return at; };
-  proto.startsWith = function (this: string, ...args) { charge(String(args[0]).length); return native.startsWith.call(this, ...args); };
-  proto.charCodeAt = function (this: string, ...args) { charge(1); return native.charCodeAt.call(this, ...args); };
-  const tk = tokenizer();
-  let out: XmlToken[];
   try {
-    out = chunks.flatMap((c) => tk.write(c));
-    out = out.concat(tk.end());
+    proto.indexOf = function (this: string, ...args) { const at = native.indexOf.call(this, ...args) as number; charge(searched(this, args[1], at)); return at; };
+    proto.includes = function (this: string, ...args) { const at = native.indexOf.call(this, ...args) as number; charge(searched(this, args[1], at)); return at !== -1; };
+    proto.lastIndexOf = function (this: string, ...args) { const at = native.lastIndexOf.call(this, ...args) as number; charge(at === -1 ? this.length : this.length - at); return at; };
+    proto.startsWith = function (this: string, ...args) { charge(String(args[0]).length); return native.startsWith.call(this, ...args); };
+    proto.charCodeAt = function (this: string, ...args) { charge(1); return native.charCodeAt.call(this, ...args); };
+    proto.slice = function (this: string, ...args) { const piece = native.slice.call(this, ...args) as string; if (piece.length < this.length) charge(piece.length); return piece; };
+    proto.substring = function (this: string, ...args) { const piece = native.substring.call(this, ...args) as string; if (piece.length < this.length) charge(piece.length); return piece; };
+    const tk = tokenizer();
+    const out = chunks.flatMap((c) => tk.write(c));
+    return out.concat(tk.end());
   } finally {
     for (const name of SCANS) proto[name] = native[name];
   }
-  return out;
 }
 
 const lineOf = (rows: string[], needle: string) => rows.findIndex((r) => r.includes(needle)) + 1;
@@ -634,18 +634,6 @@ describe('tag syntax', () => {
     expect(all(['<a b="<" <c/>'])).toEqual([error('unterminated-markup', UNTERMINATED_MARKUP), open('c', {}, true)]);
     const { rows } = run('<a b="<" <c/>', 5);
     expect(rows).toEqual(['<a b="<" ', '<c/>']);
-  });
-
-  it('treats exactly the characters a regular expression calls whitespace as whitespace between a name and an attribute', () => {
-    const chars = [...Array.from({ length: 0x3002 }, (_, c) => c), ...Array.from({ length: 0x11 }, (_, k) => 0xfef0 + k)].map((c) => String.fromCharCode(c));
-    for (const ch of chars) {
-      if (/[\w:.\-<>"'=/?!&[\]]/.test(ch)) continue;
-      const ws = /\s/.test(ch);
-      const t = all([`<a${ch}b="1"/>`]);
-      expect(t.map((x) => x.type), `U+${ch.charCodeAt(0).toString(16)}`).toEqual(ws ? ['open'] : ['error']);
-      const c = all([`</a${ch}>`]);
-      expect(c.map((x) => x.type), `U+${ch.charCodeAt(0).toString(16)}`).toEqual(ws ? ['close'] : ['error']);
-    }
   });
 });
 

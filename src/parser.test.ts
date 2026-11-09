@@ -1077,7 +1077,9 @@ describe('SitemapParser default limits', () => {
   const MIB = 1024 * 1024;
   const fedUrls = (n: number) => {
     const p = new SitemapParser({ onRecords: () => {} });
-    for (let i = 0; i < n; i++) p.write(`https://a.com/${i}\n`);
+    for (let from = 0; from < n; from += 25_000) {
+      p.write(Array.from({ length: Math.min(25_000, n - from) }, (_, k) => `https://a.com/${from + k}\n`).join(''));
+    }
     return p;
   };
   const fedBytes = (total: number) => {

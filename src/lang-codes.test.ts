@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { _hreflangCacheSize, hreflangProblem, knownLanguage } from './lang-codes.js';
+import { hreflangProblem, knownLanguage } from './lang-codes.js';
 
 const reason = (v: string) => hreflangProblem(v)?.code ?? null;
 

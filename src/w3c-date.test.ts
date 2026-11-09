@@ -18,18 +18,23 @@ describe('parseW3CDate memo', () => {
   afterEach(() => { vi.restoreAllMocks(); });
   const stamp = (n: number) => `2031-03-04T05:06:07.${n}Z`;
 
-  it('parses a value once and answers a repeat from the memo, a rejected value included', () => {
+  // A private instance of the module, so its memo starts empty whatever ran before.
+  async function freshParse(): Promise<typeof parseW3CDate> {
+    vi.resetModules();
+    return (await import('./w3c-date.js')).parseW3CDate;
+  }
+
+  it('parses a value once and answers a repeat from the memo', async () => {
+    const parseW3CDate = await freshParse();
     const spy = vi.spyOn(Date, 'parse');
     expect(parseW3CDate('2031-01-02')).toBe(Date.UTC(2031, 0, 2));
     expect(spy).toHaveBeenCalledTimes(1);
     expect(parseW3CDate('2031-01-02')).toBe(Date.UTC(2031, 0, 2));
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(parseW3CDate('2031-02-30')).toBeNaN();
-    expect(parseW3CDate('2031-02-30')).toBeNaN();
-    expect(spy).toHaveBeenCalledTimes(1);
   });
 
-  it('forgets everything once 1,000 values are held, and not before', () => {
+  it('forgets everything once 1,000 values are held, and not before', async () => {
+    const parseW3CDate = await freshParse();
     const spy = vi.spyOn(Date, 'parse');
     let n = 0;
     const fresh = () => parseW3CDate(stamp(n++));

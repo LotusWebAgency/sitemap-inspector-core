@@ -111,8 +111,8 @@ describe('error rules', () => {
     expect(f.find((x) => x.ruleId === 'invalid-priority')!.count).toBe(1);
   });
   it('accepts any xsd:decimal from 0 to 1 as a priority', () => {
-    const good = ['1.', '+0.5', '-0', '.5', '0', '1', '1.0', '0.000000000000000000001', '1.000000000000000000000', '+.25', '-0.0', '0.' + '0'.repeat(62), '00.5', '01', '000']; // the last one is 64 characters
-    const bad = ['1.1', '-0.1', '+1.5', '', '.', '+', '1e0', '0x1', '0.5.5', ' 0.5', '1,0', '0.' + '0'.repeat(63), '0.' + '0'.repeat(70)]; // 65 characters is one too many
+    const good = ['1.', '+0.5', '-0', '.5', '0', '1', '1.0', '0.000000000000000000001', '1.000000000000000000000', '+.25', '-0.0', '00.5', '01', '000', '0.' + '0'.repeat(62)]; // the last one is 64 characters
+    const bad = ['1.1', '-0.1', '+1.5', '', '.', '+', '1e0', '0x1', '0.5.5', ' 0.5', '1,0', '0.' + '0'.repeat(70), '0.' + '0'.repeat(63)]; // the last one is 65 characters, one too many
     expect(run(good.map((p, i) => rec(`https://a.com/g${i}`, { priority: p })))).toEqual([]);
     const f = run(bad.map((p, i) => rec(`https://a.com/b${i}`, { priority: p })));
     expect(f.find((x) => x.ruleId === 'invalid-priority')).toMatchObject({ count: bad.length });
