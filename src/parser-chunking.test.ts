@@ -66,6 +66,38 @@ describe('SitemapParser chunking invariance', () => {
     }
   });
 
+  it('pins the output for generated seed 1, so the invariance above compares against known-good values', () => {
+    const xml = generate(1);
+    const { result, batches } = run(xml, () => xml.length);
+    expect(batches.flatMap((b) => b.records)).toEqual([
+      { loc: 'https://a.com/0/\u00a0nb\u3000sp', line: 5, changefreq: 'weekly', priority: '0.6', alternates: [{ hreflang: 'en', href: 'https://a.com/astral \u{1d11e} \u{1f600}/?a=1&b=2' }] },
+      {
+        loc: 'https://a.com/1/AB&#xd800;&#0;', line: 11, changefreq: 'weekly', priority: '0.2', images: 1,
+        alternates: [{ hreflang: 'en', href: 'https://a.com/a & b/?a=1&b=2' }, { hreflang: 'en', href: 'https://a.com/x <y> "z" \'/>>>>><<?a=1&b=2' }],
+      },
+      {
+        loc: 'https://a.com/2/bare & amp', line: 21, images: 1,
+        alternates: [
+          { hreflang: 'x-default', href: 'https://a.com/\u00a0nb\u3000sp\ufeff/>>>>><<?a=1&b=2' },
+          { hreflang: 'de-AT', href: 'https://a.com/bare & amp/?a=1&b=2' },
+          { hreflang: 'en', href: 'https://a.com/AB&#xd800;&#0;/?a=1&b=2' },
+        ],
+      },
+      {
+        loc: 'https://a.com/3/plain', line: 33, lastmod: '2026-07-01', images: 1,
+        alternates: [{ hreflang: 'en', href: 'https://a.com/&unknown; &#99999999999;/?a=1&b=2' }, { hreflang: 'x-default', href: 'https://a.com/&unknown; &#99999999999;/?a=1&b=2' }],
+      },
+    ]);
+    expect(result.issues.map((i) => [i.detail, i.line])).toEqual([
+      ['malformed-tag', 16], ['close-mismatch', 20], ['malformed-tag', 23], ['close-mismatch', 32], ['close-mismatch', 42], ['unterminated-content', 44],
+    ]);
+    expect(result.bareAmpersands).toBe(20);
+    expect(result.stats).toEqual({
+      urlCount: 4, byteSize: Buffer.byteLength(xml), lastmodMin: '2026-07-01', lastmodMax: '2026-07-01', topLastmodShare: 0.25, duplicateCount: 0,
+      languages: ['en', 'x-default', 'de-AT'], clusterCount: 4, clustersWithoutXDefault: 2, hasPriority: true, hasChangefreq: true, imageCount: 3, newsCount: 0, videoCount: 1,
+    });
+  });
+
   it('counts the UTF-8 bytes of a chunk past the encoder scratch buffer', () => {
     const text = `<urlset><url><loc>https://a.com/${'€\u{1f600}'.repeat(30000)}</loc></url></urlset>`;
     const p = new SitemapParser({ onRecords: () => {} });
