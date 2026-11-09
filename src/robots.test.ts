@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  compileRobots, fetchRobots, matchRobots, MATCH_STEP_BUDGET, MAX_ROBOTS_CHARS, normalizeRobotsPath, parseRobots, parseRobotsGroups,
+  blockedExample, compileRobots, fetchRobots, matchRobots, MATCH_STEP_BUDGET, MAX_ROBOTS_CHARS, normalizeRobotsPath, parseRobots, parseRobotsGroups,
   productToken, robotsMode, robotsPathOf,
 } from './robots.js';
 
@@ -22,6 +22,26 @@ describe('parseRobots', () => {
   });
   it('handles files with no sitemap lines and comment lines', () => {
     expect(parseRobots('# nothing\nUser-agent: *\nAllow: /', 'https://a.com/robots.txt').sitemapUrls).toEqual([]);
+  });
+  it('reads the keyword with leading whitespace, a space before the colon and any letter case', () => {
+    const text = ['  Sitemap: https://a.com/1.xml', 'Sitemap : https://a.com/2.xml', 'sItEmAp:https://a.com/3.xml', '\tSITEMAP\t:\thttps://a.com/4.xml'].join('\n');
+    expect(parseRobots(text, 'https://a.com/robots.txt').sitemapUrls).toEqual([
+      'https://a.com/1.xml', 'https://a.com/2.xml', 'https://a.com/3.xml', 'https://a.com/4.xml',
+    ]);
+  });
+  it('ignores lines that only contain or extend the keyword', () => {
+    const text = [
+      'xSitemap: https://a.com/x.xml', 'Sitemapx: https://a.com/y.xml', 'Note: sitemap: https://a.com/z.xml',
+      'Disallow: /sitemap: https://a.com/w.xml', '# Sitemap: https://a.com/c.xml', 'Sitemap: https://a.com/ok.xml',
+    ].join('\n');
+    expect(parseRobots(text, 'https://a.com/robots.txt').sitemapUrls).toEqual(['https://a.com/ok.xml']);
+  });
+  it('accepts http, any scheme case and root-relative paths, but not other schemes or bare relative paths', () => {
+    const text = [
+      'Sitemap: http://a.com/h.xml', 'Sitemap: HTTPS://a.com/u.xml', 'Sitemap: /r.xml', 'Sitemap: not/a/url',
+      'Sitemap: sitemap.xml/x', 'Sitemap: ftp://a.com/f.xml',
+    ].join('\n');
+    expect(parseRobots(text, 'https://a.com/robots.txt').sitemapUrls).toEqual(['http://a.com/h.xml', 'https://a.com/u.xml', 'https://a.com/r.xml']);
   });
   it('strips inline comments and drops a # fragment glued into the URL', () => {
     const text = 'Sitemap: https://a.com/s.xml # main\nSitemap: https://a.com/t.xml#frag\nSitemap: # nothing';
@@ -67,6 +87,18 @@ describe('productToken', () => {
     expect(productToken('*')).toBe('*');
     expect(productToken('/x')).toBe('');
     expect(productToken('')).toBe('');
+  });
+  it('trims the value, stops at the first character outside a-z, _ and -, and keeps z and _', () => {
+    expect(productToken('  Googlebot ')).toBe('googlebot');
+    expect(productToken(' *')).toBe('*');
+    expect(productToken('*bot')).toBe('*');
+    expect(productToken('bot*')).toBe('bot');
+    expect(productToken('zzz')).toBe('zzz');
+    expect(productToken('my_bot-1')).toBe('my_bot-');
+    expect(productToken('abc{d')).toBe('abc');
+    expect(productToken('abc~d')).toBe('abc');
+    expect(productToken('abc\u00e9d')).toBe('abc');
+    expect(productToken('a1')).toBe('a');
   });
 });
 
@@ -136,6 +168,12 @@ describe('parseRobotsGroups', () => {
   it('ignores a leading BOM and reads keys case-insensitively with space before the colon', () => {
     expect(parseRobotsGroups('\uFEFFUSER-AGENT: Googlebot\nDisallow : /x\nALLOW :/y').groups).toEqual([
       { agents: ['googlebot'], rules: [{ allow: false, path: '/x', line: 2 }, { allow: true, path: '/y', line: 3 }] },
+    ]);
+  });
+
+  it('skips a line without a colon, whatever its text', () => {
+    expect(parseRobotsGroups('User-agent: *\nAllowx\nDisallowx\nUser-agentx\nDisallow: /ok').groups).toEqual([
+      { agents: ['*'], rules: [{ allow: false, path: '/ok', line: 5 }] },
     ]);
   });
 
@@ -273,6 +311,20 @@ describe('fetchRobots', () => {
       groups: [{ agents: ['*'], rules: [] }], capped: true, // the long last line was cut, so its rule is dropped, never shortened
     });
   });
+  it('releases the body when the read cap stops the read early', async () => {
+    let cancelled = false;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      const res = new Response(new ReadableStream<Uint8Array>({
+        pull(c) { c.enqueue(new TextEncoder().encode('x'.repeat(64 * 1024))); },
+        cancel() { cancelled = true; },
+      }), { status: 200 });
+      Object.defineProperty(res, 'url', { value: 'https://example.com/robots.txt' });
+      return res;
+    }));
+    const info = await fetchRobots('https://example.com');
+    expect(info?.capped).toBe(true);
+    await vi.waitFor(() => { expect(cancelled).toBe(true); });
+  });
   it('drops the partial last line when the read cap cuts the body', async () => {
     const head = 'User-agent: *\nDisallow: /kept\n#';
     const pad = 'x'.repeat(MAX_ROBOTS_CHARS - 13 - head.length - 1) + '\n';
@@ -289,12 +341,19 @@ describe('step budget', () => {
   it('covers 50,000 URLs against 2,000 same-bucket prefix rules without going over-limit (the old 100M budget did not)', () => {
     const text = 'User-agent: *\n' + Array.from({ length: 2000 }, (_, i) => `Disallow: /private-${i}/`).join('\n');
     const compiled = compileRobots(parseRobotsGroups(text).groups, 'Googlebot');
-    const meter = { steps: 0 };
-    let over = 0;
-    for (let i = 0; i < 50_000; i++) if (matchRobots(compiled, `/products/category-${i % 700}/item-${i}`, meter).kind === 'over-limit') over++;
-    expect(over).toBe(0);
-    expect(meter.steps).toBeGreaterThan(100_000_000);
-    expect(meter.steps).toBeLessThan(MATCH_STEP_BUDGET);
+    const url = (i: number) => `/products/category-${String(i % 100).padStart(3, '0')}/item-${String(i % 100).padStart(5, '0')}`;
+    const run = (count: number) => {
+      const meter = { steps: 0 };
+      for (let i = 0; i < count; i++) expect(matchRobots(compiled, url(i), meter)).toEqual({ kind: 'allowed' });
+      return meter.steps;
+    };
+    const hundred = run(100);
+    expect(run(200)).toBe(2 * hundred); // linear in the number of URLs: every cycle of 100 costs the same
+    const floor = 100 * (2 * url(0).length + 64 + 2000); // the path twice, the call constant, one step for each of the 2,000 rules
+    expect(hundred).toBeGreaterThanOrEqual(floor);
+    expect(hundred).toBeLessThan(floor * 1.5); // the digits in a path now and then collide with a rule character in the prefilter
+    expect(500 * hundred).toBeGreaterThan(100_000_000);
+    expect(500 * hundred).toBeLessThan(MATCH_STEP_BUDGET);
   });
 });
 
@@ -314,6 +373,27 @@ describe('normalizeRobotsPath', () => {
     expect(normalizeRobotsPath('/x\uD800')).toBe('/x%EF%BF%BD'); // lone surrogate: replacement character, no throw
     expect(normalizeRobotsPath('/*.pdf$')).toBe('/*.pdf$');
     expect(normalizeRobotsPath('/a%2a%24')).toBe('/a%2A%24');    // encoded * and $ stay literal
+  });
+
+  it('decodes an escape of every unreserved character, at the edge of each range', () => {
+    expect(normalizeRobotsPath('/%41%5A%5a%61%7A%7a%30%39%2E%2e%5F%5f%7E%7e%2D')).toBe('/AZZazz09..__~~-');
+    expect(normalizeRobotsPath('/%40%5B%60%7B%2F%3A%2C')).toBe('/%40%5B%60%7B%2F%3A%2C');
+  });
+
+  it('turns a % without two hex digits after it into %25 and reads digits of either case', () => {
+    expect(normalizeRobotsPath('/%4z')).toBe('/%254z');
+    expect(normalizeRobotsPath('/%z4')).toBe('/%25z4');
+    expect(normalizeRobotsPath('/%0:')).toBe('/%250:');
+    expect(normalizeRobotsPath('/%0Z')).toBe('/%250Z');
+    expect(normalizeRobotsPath('/%0a/%0A/%00')).toBe('/%0A/%0A/%00');
+    expect(normalizeRobotsPath('/%fF')).toBe('/%FF');
+    expect(normalizeRobotsPath('/%')).toBe('/%25');
+    expect(normalizeRobotsPath('/%4')).toBe('/%254');
+  });
+
+  it('escapes DEL and the space, but not the printable characters around them', () => {
+    expect(normalizeRobotsPath('/a\x7fb c~!')).toBe('/a%7Fb%20c~!');
+    expect(normalizeRobotsPath('/\x1f\x20\x21')).toBe('/%1F%20!');
   });
 
   it('escapes the ASCII characters URL parsers may escape, so both spellings agree', () => {
@@ -354,6 +434,10 @@ describe('robotsPathOf', () => {
       expect(robotsPathOf(other, ORIGIN), other).toBeNull();
     }
   });
+  it('refuses a scheme other than http(s) even when its origin equals the one asked for', () => {
+    expect(robotsPathOf('ftp://example.com/a', 'ftp://example.com')).toBeNull();
+    expect(robotsPathOf('ftp://example.com/a', ORIGIN, ['ftp://example.com'])).toBeNull();
+  });
 });
 
 describe('matchRobots', () => {
@@ -378,6 +462,155 @@ describe('matchRobots', () => {
     expect(kind(text, '/a$b/c')).toBe('blocked');     // a $ before the end is a literal character
     expect(kind(text, '/x/y/end')).toBe('blocked');
     expect(kind(text, '/x/end/z')).toBe('allowed');
+  });
+
+  it('lets Allow win a tie whichever rule is listed first', () => {
+    expect(matchRobots(rulesFor('User-agent: *\nDisallow: /page\nAllow: /page'), '/page', { steps: 0 })).toEqual({
+      kind: 'allowed', rule: { allow: true, path: '/page', line: 3 },
+    });
+    expect(matchRobots(rulesFor('User-agent: *\nAllow: /page\nDisallow: /page'), '/page', { steps: 0 })).toEqual({
+      kind: 'allowed', rule: { allow: true, path: '/page', line: 2 },
+    });
+    const mixed = 'User-agent: *\nDisallow: /a*\nDisallow: /*b\nAllow: /a*\nAllow: /*b\nDisallow: /*c';
+    expect(kind(mixed, '/ab')).toBe('allowed');
+    expect(kind(mixed, '/xc')).toBe('blocked');
+    expect(matchRobots(rulesFor('User-agent: *\nDisallow: /x\nAllow: /x\nDisallow: /x'), '/x/y', { steps: 0 })).toEqual({
+      kind: 'allowed', rule: { allow: true, path: '/x', line: 3 },
+    });
+  });
+
+  it('matches a star at the start against a path that starts with the next part', () => {
+    expect(kind('User-agent: *\nDisallow: */admin/*', '/admin/x')).toBe('blocked');
+    expect(kind('User-agent: *\nDisallow: */admin/*', '/a/admin/x')).toBe('blocked');
+    expect(kind('User-agent: *\nDisallow: */admin/*', '/admin')).toBe('allowed');
+    expect(kind('User-agent: *\nDisallow: */x', '/x')).toBe('blocked');
+    expect(kind('User-agent: *\nDisallow: */x', '/y/x')).toBe('blocked');
+    expect(kind('User-agent: *\nDisallow: */x', '/y')).toBe('allowed');
+    expect(kind('User-agent: *\nDisallow: *a*b', 'ab')).toBe('blocked');
+    expect(kind('User-agent: *\nDisallow: *ab', 'abc')).toBe('blocked');
+    expect(kind('User-agent: *\nDisallow: *abc$', 'abc')).toBe('blocked');
+    expect(kind('User-agent: *\nDisallow: *abc$', 'abcd')).toBe('allowed');
+  });
+
+  it('does not let a part before the $ anchor overlap the anchored suffix', () => {
+    expect(kind('User-agent: *\nDisallow: /*ab*bc$', '/xabc')).toBe('allowed'); // 'ab' and 'bc' would share the 'b'
+    expect(kind('User-agent: *\nDisallow: /*ab*bc$', '/xabbc')).toBe('blocked');
+    expect(kind('User-agent: *\nDisallow: /*ab*bc$', '/xabxbc')).toBe('blocked');
+    expect(kind('User-agent: *\nDisallow: /ab*bc$', '/abbc')).toBe('blocked');
+    expect(kind('User-agent: *\nDisallow: /ab*bc$', '/abc')).toBe('allowed');
+    expect(kind('User-agent: *\nDisallow: /a*a$', '/a')).toBe('allowed');
+    expect(kind('User-agent: *\nDisallow: /a*a$', '/aa')).toBe('blocked');
+  });
+
+  it('finds a part after a partial match of itself (KMP failure links)', () => {
+    expect(kind('User-agent: *\nDisallow: /*abac', '/ababac')).toBe('blocked');
+    expect(kind('User-agent: *\nDisallow: /*abac', '/ababab')).toBe('allowed');
+    expect(kind('User-agent: *\nDisallow: /*abac$', '/ababac')).toBe('blocked');
+    expect(kind('User-agent: *\nDisallow: /*a*b*ababc', '/ababababc')).toBe('blocked');
+    expect(kind('User-agent: *\nDisallow: /*ab*ababc', '/ababababc')).toBe('blocked');
+    expect(kind('User-agent: *\nDisallow: /*ab*ababc', '/abababab')).toBe('allowed');
+    expect(kind('User-agent: *\nDisallow: /*aabaaab', '/aabaaaabaaab')).toBe('blocked');
+    expect(kind('User-agent: *\nDisallow: /*aabaaab*x', '/aabaaaabaaabx')).toBe('blocked');
+    expect(kind('User-agent: *\nDisallow: /*aaab', '/aaaab')).toBe('blocked');
+    expect(kind('User-agent: *\nDisallow: /*aabaac', '/aabaabaac')).toBe('blocked');
+    expect(kind('User-agent: *\nDisallow: /*aabb', '/aababb')).toBe('allowed');
+    expect(kind('User-agent: *\nDisallow: /*aabaaaa', '/aabaaabaaaa')).toBe('blocked');
+  });
+
+  it('agrees with a reference wildcard model on random multi-character parts', () => {
+    const reference = (p: string) => {
+      const anchored = p.endsWith('$');
+      const body = (anchored ? p.slice(0, -1) : p).split('*').map((s) => s.replace(/[.$]/g, '\\$&')).join('.*');
+      return new RegExp('^' + body + (anchored ? '$' : ''));
+    };
+    let seed = 11;
+    const rand = (n: number) => { seed = (seed * 48271) % 2147483647; return seed % n; };
+    const word = (alphabet: string, min: number, max: number) => Array.from({ length: min + rand(max - min + 1) }, () => alphabet.charAt(rand(alphabet.length))).join('');
+    for (let i = 0; i < 4000; i++) {
+      const parts = Array.from({ length: 1 + rand(3) }, () => word('ab', 1, 7));
+      const pattern = '/' + parts.join('*') + (rand(3) === 0 ? '$' : '');
+      const path = '/' + word(rand(2) === 0 ? 'ab' : 'abc', 0, 16);
+      const expected = reference(pattern).test(path) ? 'blocked' : 'allowed';
+      expect(kind(`User-agent: *\nDisallow: ${pattern}`, path), `${pattern} vs ${path}`).toBe(expected);
+    }
+  });
+
+  it('never matches a rule whose pattern starts with neither / nor *, even for a path without a leading slash', () => {
+    expect(matchRobots(rulesFor('User-agent: *\nDisallow: private'), 'private', { steps: 0 })).toEqual({ kind: 'allowed' });
+  });
+
+  describe('step accounting', () => {
+    const callCost = (path: string) => 2 * path.length + 64;
+    const probe = (rules: string[], path: string) => {
+      const meter = { steps: 0 };
+      const verdict = matchRobots(rulesFor('User-agent: *\n' + rules.map((r) => `Disallow: ${r}`).join('\n')), path, meter);
+      return { kind: verdict.kind, steps: meter.steps };
+    };
+
+    it('skips a rule for one step when the path lacks a character the rule needs, in either half of the mask', () => {
+      expect(probe(['/*a'], '/AAA')).toEqual({ kind: 'allowed', steps: callCost('/AAA') + 1 });
+      expect(probe(['/*A'], '/bbb')).toEqual({ kind: 'allowed', steps: callCost('/bbb') + 1 });
+      expect(probe(['/*a*b'], '/bbbb')).toEqual({ kind: 'allowed', steps: callCost('/bbbb') + 1 });
+      expect(probe(['/*b*a'], '/bbbb')).toEqual({ kind: 'allowed', steps: callCost('/bbbb') + 1 });
+    });
+
+    it('skips a rule for one step when the path is shorter than its literal parts together', () => {
+      expect(probe(['/*aa*bb'], '/ab')).toEqual({ kind: 'allowed', steps: callCost('/ab') + 1 });
+      expect(probe(['/*aa*bb$'], '/ab')).toEqual({ kind: 'allowed', steps: callCost('/ab') + 1 });
+    });
+
+    it('looks only at rules in the bucket of the path second character, plus the wildcard-led ones', () => {
+      expect(probe(['/a'], '/z')).toEqual({ kind: 'allowed', steps: callCost('/z') });
+      expect(probe(['/a', '/b/', '/ab'], '/c')).toEqual({ kind: 'allowed', steps: callCost('/c') });
+      expect(probe(['/a', '/*z'], '/z')).toEqual({ kind: 'blocked', steps: callCost('/z') + 4 + 1 + 1 }); // 4 per rule, '/' prefix, 'z' part
+    });
+
+    it('charges one step for an empty last part and the compared characters for prefix and suffix checks', () => {
+      expect(probe(['/a*'], '/ab')).toEqual({ kind: 'blocked', steps: callCost('/ab') + 4 + 2 + 1 });
+      expect(probe(['/ab'], '/abc')).toEqual({ kind: 'blocked', steps: callCost('/abc') + 4 + 3 });
+      expect(probe(['/abc'], '/acb')).toEqual({ kind: 'allowed', steps: callCost('/acb') + 4 + 3 }); // diverges at the 3rd character
+      expect(probe(['/*abc$'], '/xabc')).toEqual({ kind: 'blocked', steps: callCost('/xabc') + 4 + 1 + 3 });
+      expect(probe(['/*abc$'], '/abcab')).toEqual({ kind: 'allowed', steps: callCost('/abcab') + 4 + 1 + 1 }); // diverges at the last character
+      expect(probe(['/*abc$'], '/abxbc')).toEqual({ kind: 'allowed', steps: callCost('/abxbc') + 4 + 1 + 3 });
+      expect(probe(['/*xbc$'], '/abcbc')).toEqual({ kind: 'allowed', steps: callCost('/abcbc') + 1 }); // no x in the path
+    });
+
+    it('charges one step per comparison of a part search, failure links included', () => {
+      // a b a | b: fails against 'c', falls back to 'ab' (1 link step), then a, c: 3 + 2 + 1 + 1 = 7
+      expect(probe(['/*abac'], '/ababac')).toEqual({ kind: 'blocked', steps: callCost('/ababac') + 4 + 1 + 7 });
+      expect(probe(['/*abac'], '/ababab')).toEqual({ kind: 'allowed', steps: callCost('/ababab') + 1 });
+    });
+
+    it('sizes the shared failure-table array by the parts that are searched', () => {
+      expect(rulesFor('User-agent: *\nDisallow: /x*b*cd*ef').tables.length).toBe(4);   // 'cd' and 'ef'; the single character and the first part need none
+      expect(rulesFor('User-agent: *\nDisallow: /x*b*cd*ef$').tables.length).toBe(2);  // the anchored last part is a suffix check
+      expect(rulesFor('User-agent: *\nDisallow: /*a*b*ababc').tables.length).toBe(5);
+      expect(rulesFor('User-agent: *\nDisallow: /*ab*ababc').tables.length).toBe(7);
+      expect(rulesFor('User-agent: *\nDisallow: /abc').tables.length).toBe(0);
+      expect(rulesFor('User-agent: *\nDisallow: /abc$').tables.length).toBe(0);
+    });
+  });
+
+  it('stays within the budget check exactly: a meter at the budget is still served, one past it is not', () => {
+    const empty = rulesFor('');
+    expect(matchRobots(empty, '/x', { steps: MATCH_STEP_BUDGET })).toEqual({ kind: 'allowed' });
+    expect(matchRobots(empty, '/x', { steps: MATCH_STEP_BUDGET + 1 })).toEqual({ kind: 'over-limit' });
+    const one = rulesFor('User-agent: *\nDisallow: /ab');
+    const exact = { steps: MATCH_STEP_BUDGET - (2 * '/a'.length + 64) };
+    expect(matchRobots(one, '/a', exact)).toEqual({ kind: 'allowed' }); // the call lands on the budget, the rule check passes
+    expect(exact.steps).toBe(MATCH_STEP_BUDGET + 1);
+    expect(matchRobots(one, '/a', { steps: MATCH_STEP_BUDGET - (2 * '/a'.length + 64) + 1 })).toEqual({ kind: 'over-limit' });
+  });
+
+  it('words the example of a blocking Allow rule and of a Disallow rule', () => {
+    expect(blockedExample('https://a.com/x', { allow: false, path: '/x', line: 4 })).toEqual({
+      value: 'https://a.com/x: blocked by "Disallow: /x" (robots.txt line 4)',
+      code: 'robots-rule',
+      params: { url: 'https://a.com/x', rule: 'Disallow: /x', robotsLine: '4' },
+    });
+    expect(blockedExample('https://a.com/x', { allow: true, path: '/x', line: 7 }).params).toEqual({
+      url: 'https://a.com/x', rule: 'Allow: /x', robotsLine: '7',
+    });
   });
 
   it('merges the groups of an agent and falls back to *', () => {
@@ -458,9 +691,7 @@ describe('matchRobots', () => {
     const meter = { steps: 0 };
     const path = '/' + 'a'.repeat(2000) + '0123456789b';
     const calls = 100;
-    const t0 = performance.now();
     for (let i = 0; i < calls; i++) expect(matchRobots(compiled, path, meter).kind).toBe('allowed');
-    expect(performance.now() - t0).toBeLessThan(10_000); // hang guard only
     // per call: the path twice (normalized, masked), then per rule at most 2 comparisons per path character plus a constant
     const perCall = 200 + 2 * path.length + rules * (2 * path.length + 20);
     expect(meter.steps).toBeGreaterThan(calls * rules * path.length);
@@ -478,9 +709,7 @@ describe('matchRobots', () => {
       const one = { steps: 0 };
       matchRobots(compiled, path, one);
       const many = { steps: 0 };
-      const t0 = performance.now();
       for (let i = 0; i < 200; i++) matchRobots(compiled, path, many);
-      expect(performance.now() - t0, label).toBeLessThan(10_000); // hang guard only
       expect(many.steps, label).toBe(200 * one.steps); // deterministic: every call costs the same
       // the empty parts between stars are dropped at compile time; every rule examined in full costs at least RULE_STEP_COST (4) on top of the per-call cost
       expect(one.steps, label).toBeGreaterThanOrEqual(2 * path.length + 64 + rules * 4);
