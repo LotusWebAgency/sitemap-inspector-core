@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { MAX_XML_LINE, XmlPrinter, type LayoutSink } from './printer.js';
+import { continuesRow, MAX_XML_LINE, XmlPrinter, type LayoutSink } from './printer.js';
 import { SitemapParser } from './parser.js';
 import { XmlTokenizer, type XmlToken } from './tokenizer.js';
 import type { UrlRecord } from './types.js';
@@ -68,6 +68,18 @@ describe('XmlPrinter format rules', () => {
     expect(rowsOf("<a it's\n x=\"1\">t</a\n>")).toEqual(["<a it's x=\"1\">t</a >"]); // a stray apostrophe opens no quote
   });
 
+  it('collapses a lone CR between attributes like any other line break', () => {
+    expect(rowsOf('<urlset\r xmlns="a"\rxmlns:x="b"\r>')).toEqual(['<urlset xmlns="a" xmlns:x="b" >']);
+    expect(direct([['self', '<a\rx="1"/>']]).rows).toEqual(['<a x="1"/>']);
+  });
+
+  it('opens a quoted value after = with either quote, and only there', () => {
+    expect(rowsOf("<a\n x='1\n2'/>")).toEqual(["<a x='1", "2'/>"]);
+    expect(rowsOf('<a x="1" "p\nq"/>')).toEqual(['<a x="1" "p q"/>']); // a quote that follows no = opens nothing
+    expect(rowsOf('<a x=v "p\nq"/>')).toEqual(['<a x=v "p q"/>']); // a value character after = ends the wait for a quote
+    expect(rowsOf('<a x=\u0001 "p\nq"/>')).toEqual(['<a x=\u0001 "p', 'q"/>']); // a control character does not
+  });
+
   it('ends a row at every line break inside a construct, continuation rows verbatim', () => {
     expect(rowsOf('<a><!-- one\r\ntwo\rthree\n\n  four --></a>')).toEqual(['<a>', '  <!-- one', 'two', 'three', '', '  four -->', '</a>']);
     expect(rowsOf('<a>one\ntwo</a>')).toEqual(['<a>one', 'two</a>']);
@@ -94,6 +106,30 @@ describe('XmlPrinter format rules', () => {
     expect(rows.map((r) => r.length)).toEqual([MAX_XML_LINE, MAX_XML_LINE, 20_007 - 2 * MAX_XML_LINE]);
     expect(rows.join('')).toBe(`<a>${'x'.repeat(20_000)}</a>`);
     expect(rowsOf(`<a>${'x'.repeat(MAX_XML_LINE - 3)}</a>`).map((r) => r.length)).toEqual([MAX_XML_LINE, 4]); // the close cannot fit: next row
+  });
+
+  it('knows a stored row that continues into the next', () => {
+    expect(continuesRow('x'.repeat(MAX_XML_LINE))).toBe(true);
+    expect(continuesRow('x'.repeat(MAX_XML_LINE - 1))).toBe(false);
+    expect(continuesRow('x'.repeat(MAX_XML_LINE + 1))).toBe(false);
+    expect(continuesRow('')).toBe(false);
+    expect(rowsOf(`<a>${'x'.repeat(20_000)}</a>`).map(continuesRow)).toEqual([true, true, false]);
+  });
+
+  it('adds no row for a non-text span without content', () => {
+    const { rows, lines, line } = direct([['self', '<a/>'], ['comment', ''], ['self', '<b/>']]);
+    expect(rows).toEqual(['<a/>', '<b/>']);
+    expect(lines).toEqual([1, 1, 2]);
+    expect(line).toBe(2);
+  });
+
+  it('starts a construct that begins with a line break on a row of its own', () => {
+    const bad = direct([['bad', '\nx']]);
+    expect(bad.rows).toEqual(['', 'x']);
+    expect(bad.lines).toEqual([1]);
+    const cdata = direct([['open', '<a>'], ['cdata', '\n<![CDATA[x]]>']]);
+    expect(cdata.rows).toEqual(['<a>', '<![CDATA[x]]>']);
+    expect(cdata.lines).toEqual([1, 2]);
   });
 
   it('returns the line a construct starts on, past a full row', () => {
@@ -129,6 +165,21 @@ describe('XmlPrinter format rules', () => {
     p.finish();
     expect(batches.map((b) => b.length)).toEqual([1000, 1000, 500]);
     expect(new Set(batches).size).toBe(3);
+    const exact: string[][] = [];
+    const full = new XmlPrinter((r) => exact.push(r));
+    for (let i = 0; i < 1000; i++) full.span('self', '<a/>');
+    full.finish();
+    full.finish();
+    expect(exact.map((b) => b.length)).toEqual([1000]);
+    const partial: string[][] = [];
+    const few = new XmlPrinter((r) => partial.push(r));
+    for (let i = 0; i < 3; i++) few.span('self', '<a/>');
+    few.finish();
+    few.finish();
+    expect(partial).toEqual([['<a/>', '<a/>', '<a/>']]);
+    const none: string[][] = [];
+    new XmlPrinter((r) => none.push(r)).finish();
+    expect(none).toEqual([]);
     const silent = new XmlPrinter();
     for (let i = 0; i < 2500; i++) silent.span('self', '<a/>');
     silent.finish();
@@ -153,6 +204,22 @@ describe('XmlPrinter plain mode', () => {
     expect(plain(['a\r', '\nb\r', 'c']).rows).toEqual(['a', 'b', 'c']);
     expect(plain(['https://a.com/1\rhttps://a.com/2\r\rhttps://a.com/3\r']).rows).toEqual(['https://a.com/1', 'https://a.com/2', '', 'https://a.com/3']);
     expect(plain(['a\r\n', 'b\r', '\r\n', 'c']).rows).toEqual(['a', 'b', '', 'c']);
+  });
+
+  it('numbers an empty first line and a chunk that opens with the break ending the previous row', () => {
+    expect(plain(['\nabc'])).toEqual({ rows: ['', 'abc'], lines: [1] });
+    expect(plain(['abc', '\ndef'])).toEqual({ rows: ['abc', 'def'], lines: [1, 2] });
+    expect(plain(['abc\r', '\n', 'def'])).toEqual({ rows: ['abc', 'def'], lines: [1, 1, 2] });
+  });
+
+  it('skips the LF after a chunk-final CR only in the chunk that follows it', () => {
+    expect(plain(['a\r', 'b', '\nc'])).toEqual({ rows: ['a', 'b', 'c'], lines: [1, 2, 3] });
+  });
+
+  it('finds every break when each line is a single character', () => {
+    expect(plain(['a\nb\nc\nd'])).toEqual({ rows: ['a', 'b', 'c', 'd'], lines: [1] });
+    expect(plain(['a\rb\rc\rd'])).toEqual({ rows: ['a', 'b', 'c', 'd'], lines: [1] });
+    expect(plain(['a\r\nb\r\nc'])).toEqual({ rows: ['a', 'b', 'c'], lines: [1] });
   });
 
   it('cuts a long line and returns the row each piece starts on', () => {
@@ -194,7 +261,8 @@ function randomDoc(seed: number): string {
 
 describe('layout properties over random documents and chunkings', () => {
   const docs = Array.from({ length: 60 }, (_, k) => randomDoc(k + 1));
-  const fixtures = readdirSync('test/fixtures', { withFileTypes: true }).filter((e) => e.isFile()).map((e) => readFileSync(`test/fixtures/${e.name}`, 'utf8'));
+  const fixtureDir = new URL('../test/fixtures/', import.meta.url);
+  const fixtures = readdirSync(fixtureDir, { withFileTypes: true }).filter((e) => e.isFile()).map((e) => readFileSync(new URL(e.name, fixtureDir), 'utf8'));
 
   it('feeds every input character to the sink exactly once, in order, at any chunk size', () => {
     for (const [k, doc] of [...docs, ...fixtures].entries()) {
@@ -290,7 +358,7 @@ describe('whitespace and line breaks do not depend on where the input is split',
   it('writes a whitespace run that content follows in full, however it is split', () => {
     const doc = `<a>x${' \n'.repeat(5000)}y</a>`;
     const whole = layout(doc);
-    expect(whole.rows.length).toBeGreaterThan(5000);
+    expect(whole.rows).toEqual(['<a>x ', ...Array.from({ length: 4999 }, () => ' '), 'y</a>']);
     for (const size of [1, 7, 500, 8000]) expect(layout(doc, size).rows, `size ${size}`).toEqual(whole.rows);
   });
 
@@ -369,6 +437,7 @@ describe('pathological inputs stay linear', () => {
     expect(r.ms).toBeLessThan(3000);
     const tail = stream('<a>x', ' \n'.repeat(CHUNK / 2), 160, '</a>');
     expect(tail.ms).toBeLessThan(3000);
-    expect(tail.rows).toBeGreaterThan(1); // flushed past the hold cap, verbatim
+    // everything but the last 8,192 held characters is written: 1 + (pairs - 1) whitespace rows, then </a> on its own row
+    expect(tail.rows).toBe(160 * CHUNK / 2 - MAX_XML_LINE / 2 + 1);
   });
 });

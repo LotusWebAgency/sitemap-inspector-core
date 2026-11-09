@@ -22,6 +22,10 @@ describe('normalizeUrl', () => {
     expect(normalizeUrl('javascript:alert(1)')).toBeNull();
     expect(normalizeUrl('mailto:a@b.c')).toBeNull();
   });
+  it('rejects a scheme that merely ends in http or https', () => {
+    for (const u of ['web+https://a.com/x', 'xhttp://a.com/x', 'view-http://a.com/']) expect(normalizeUrl(u), u).toBeNull();
+    expect(normalizeParsed(new URL('web+https://a.com/x'))).toBeNull();
+  });
   it('drops a fragment after a query and keeps the query', () => {
     expect(normalizeUrl('https://a.com/x?b=2#f')).toBe('https://a.com/x?b=2');
   });
