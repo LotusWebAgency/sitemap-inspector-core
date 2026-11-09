@@ -23,6 +23,22 @@ describe('pLimit', () => {
     gates[3]!.open(); gates[4]!.open();
     expect(await Promise.all(results)).toEqual([0, 10, 20, 30, 40]);
   });
+  it('keeps limiting after earlier tasks finished: a late task still runs, and no more than n run at once', async () => {
+    const limit = pLimit(2);
+    expect(await Promise.all([limit(async () => 'a'), limit(async () => 'b'), limit(async () => 'c')])).toEqual(['a', 'b', 'c']);
+    expect(await limit(async () => 'late')).toBe('late');
+    const started: number[] = [];
+    const gates = Array.from({ length: 4 }, () => { let open!: () => void; const gate = new Promise<void>((r) => { open = r; }); return { gate, open }; });
+    const results = gates.map((g, i) => limit(async () => { started.push(i); await g.gate; return i; }));
+    await Promise.resolve();
+    expect(started).toEqual([0, 1]);
+    gates[0]!.open();
+    await vi.waitFor(() => { expect(started).toEqual([0, 1, 2]); });
+    gates[1]!.open(); gates[2]!.open();
+    await vi.waitFor(() => { expect(started).toEqual([0, 1, 2, 3]); });
+    gates[3]!.open();
+    expect(await Promise.all(results)).toEqual([0, 1, 2, 3]);
+  });
   it('hands a rejection to its caller and frees the slot', async () => {
     const limit = pLimit(1);
     const failing = limit(async () => { throw new Error('boom'); });
@@ -43,6 +59,33 @@ describe('discoverSitemaps stored fields', () => {
     const by = (u: string) => found.find((f) => f.url === u)!;
     expect(by('https://a.com/sitemap.xml')).toMatchObject({ finalUrl: 'https://a.com/sitemap.xml', httpLastModified: undefined });
     expect(by('https://a.com/sitemap_index.xml').httpLastModified).toBe('Wed, 21 Oct 2026 07:28:00 GMT');
+  });
+  it('keeps a redirect target of exactly 2,048 characters and a Last-Modified of exactly 64, and drops one more of either', async () => {
+    const finalOf = (length: number) => `https://a.com/${'x'.repeat(length - 'https://a.com/'.length - '.xml'.length)}.xml`;
+    const sniff = sniffing({
+      'https://a.com/sitemap.xml': ok('https://a.com/sitemap.xml', 'urlset', { finalUrl: finalOf(2048), redirected: true, lastModified: 'x'.repeat(64) }),
+      'https://a.com/sitemap_index.xml': ok('https://a.com/sitemap_index.xml', 'urlset', { finalUrl: finalOf(2049), redirected: true, lastModified: 'x'.repeat(65) }),
+    });
+    const { found } = await discoverSitemaps('https://a.com', null, { sniff });
+    const by = (u: string) => found.find((f) => f.url === u)!;
+    expect(finalOf(2048)).toHaveLength(2048);
+    expect(by('https://a.com/sitemap.xml')).toMatchObject({ finalUrl: finalOf(2048), httpLastModified: 'x'.repeat(64) });
+    expect(by('https://a.com/sitemap.xml')).not.toHaveProperty('longFinalOrigin');
+    expect(by('https://a.com/sitemap_index.xml')).toMatchObject({ finalUrl: 'https://a.com/sitemap_index.xml', httpLastModified: undefined, longFinalOrigin: 'https://a.com' });
+  });
+  it('hands over an http origin of a long redirect target, and none for another scheme or an unparsable target', async () => {
+    const sniff = sniffing({
+      'https://a.com/sitemap.xml': ok('https://a.com/sitemap.xml', 'urlset', { finalUrl: `http://b.com:8080/${'x'.repeat(2100)}.xml`, redirected: true }),
+      'https://a.com/sitemap_index.xml': ok('https://a.com/sitemap_index.xml', 'urlset', { finalUrl: `ftp://c.com/${'x'.repeat(2100)}.xml`, redirected: true }),
+      'https://a.com/sitemap-index.xml': ok('https://a.com/sitemap-index.xml', 'urlset', { finalUrl: 'x'.repeat(2100), redirected: true }),
+    });
+    const { found } = await discoverSitemaps('https://a.com', null, { sniff });
+    const by = (u: string) => found.find((f) => f.url === u)!;
+    expect(by('https://a.com/sitemap.xml')).toMatchObject({ finalUrl: 'https://a.com/sitemap.xml', longFinalOrigin: 'http://b.com:8080' });
+    for (const u of ['https://a.com/sitemap_index.xml', 'https://a.com/sitemap-index.xml']) {
+      expect(by(u), u).toMatchObject({ finalUrl: u });
+      expect(by(u), u).not.toHaveProperty('longFinalOrigin');
+    }
   });
   it('hands over the origin of a redirect target longer than 2,048 characters, so another host still reads as cross-origin', async () => {
     const sniff = sniffing({
@@ -285,6 +328,21 @@ describe('discoverSitemaps', () => {
     expect(found.map((d) => [d.url, d.source, d.kind])).toEqual([['https://a.com/page-0.xml', 'page', 'sitemapindex']]);
     expect(failedRobots).toEqual([{ url: 'https://a.com/r.xml', reason: 'http-error', status: 404 }]);
   });
+  it('fills in the defaults of a bare sniff result: probed url as final url, no gzip, status 200, no redirect', async () => {
+    const sniff = sniffing({ 'https://a.com/sitemap.xml': { sniff: 'sitemapindex' } });
+    const { found } = await discoverSitemaps(origin, null, { sniff });
+    expect(found).toStrictEqual([{
+      url: 'https://a.com/sitemap.xml', finalUrl: 'https://a.com/sitemap.xml', source: 'probe', kind: 'sitemapindex', gzip: false, httpStatus: 200, redirected: false,
+      httpLastModified: undefined, contentType: undefined,
+    }]);
+  });
+
+  it('ignores a tab url that does not parse', async () => {
+    const sniff = sniffing();
+    await expect(discoverSitemaps(origin, null, { sniff }, { tabUrl: 'not a url' })).resolves.toEqual({ found: [], failedRobots: [] });
+    expect(sniff).toHaveBeenCalledTimes(COMMON_PATHS.length);
+  });
+
   it('maps a sniff result onto the found sitemap: final url, gzip, status, redirect, last-modified and normalized content type', async () => {
     const sniff = sniffing({ 'https://a.com/sitemap.xml': ok('https://a.com/sitemap.xml', 'urlset', {
       finalUrl: 'https://a.com/moved.xml', gzip: true, status: 203, redirected: true, lastModified: 'Wed, 01 Jul 2026 00:00:00 GMT', contentType: 'Text/HTML; charset=UTF-8',

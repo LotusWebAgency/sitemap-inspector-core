@@ -52,7 +52,8 @@ describe('looksLikeSitemapUrl', () => {
     }
   });
   it('rejects ordinary pages and single-use links', () => {
-    for (const u of ['https://a.com/account/reset?token=abc', 'https://a.com/', 'https://a.com/blog/post', 'https://a.com/a.xml/page', 'https://a.com/account/reset?token=x&next=/sitemap', 'https://a.com/?q=my-sitemap', 'https://a.com/account/reset?token=x&next=sitemap.xml', 'https://a.com/account/reset?token=abc&sitemap=1', 'https://a.com/account/reset?token=abc&x=sitemap', 'https://a.com/reset;sitemap?token=x', 'not a url']) {
+    for (const u of ['https://a.com/account/reset?token=abc', 'https://a.com/', 'https://a.com/blog/post', 'https://a.com/a.xml/page', 'https://a.com/account/reset?token=x&next=/sitemap', 'https://a.com/?q=my-sitemap', 'https://a.com/account/reset?token=x&next=sitemap.xml', 'https://a.com/account/reset?token=abc&sitemap=1', 'https://a.com/account/reset?token=abc&x=sitemap', 'https://a.com/reset;sitemap?token=x', 'not a url',
+      'https://a.com/p?x=sitemap/evil', 'https://a.com/p?x=sitemap%20x', 'https://a.com/p?x=sitemap!']) {
       expect(looksLikeSitemapUrl(u), u).toBe(false);
     }
   });
@@ -68,5 +69,16 @@ describe('aliasSiteUrl', () => {
     const u = new URL('https://other.com/a');
     expect(aliasSiteUrl(u, origin, aliases)).toBe(u);
     expect(aliasSiteUrl(new URL('https://example.com/a'), origin, undefined).href).toBe('https://example.com/a');
+  });
+  it('returns the very same url when it is already on the scan origin, even if that origin is listed as an alias', () => {
+    const u = new URL('http://x.localhost:1/a?b=1');
+    expect(aliasSiteUrl(u, origin, [origin])).toBe(u);
+    expect(aliasSiteUrl(u, origin, [origin, ...aliases])).toBe(u);
+    const v = new URL('https://example.com/a');
+    expect(aliasSiteUrl(v, origin, [])).toBe(v);
+  });
+  it('returns the url unchanged when the scan origin cannot take its path', () => {
+    const u = new URL('https://example.com/a?b=1');
+    expect(aliasSiteUrl(u, 'not an origin', aliases)).toBe(u);
   });
 });
