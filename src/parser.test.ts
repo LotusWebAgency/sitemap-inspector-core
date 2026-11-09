@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { SitemapParser } from './parser.js';
 import { EXAMPLE_MAX, type ExtensionHit } from './extensions.js';
 import { MAX_XML_LINE } from './printer.js';
@@ -483,11 +483,18 @@ describe('SitemapParser', () => {
 
     it('splits a newline-free body into lines in linear time', () => {
       let calls = 0;
-      const p = new SitemapParser({ onRecords: () => {}, onLines: () => { calls++; } });
-      const t0 = performance.now();
-      for (let i = 0; i < 4000; i++) p.write('x'.repeat(1000));
-      p.finish();
-      expect(performance.now() - t0).toBeLessThan(2000);
+      let scanned = 0;
+      const original = String.prototype.indexOf;
+      const spy = vi.spyOn(String.prototype, 'indexOf').mockImplementation(function (this: string, ...args: Parameters<string['indexOf']>) {
+        scanned += this.length - (args[1] ?? 0);
+        return original.apply(this, args);
+      });
+      try {
+        const p = new SitemapParser({ onRecords: () => {}, onLines: () => { calls++; } });
+        for (let i = 0; i < 4000; i++) p.write('x'.repeat(1000));
+        p.finish();
+      } finally { spy.mockRestore(); }
+      expect(scanned).toBeLessThanOrEqual(4 * 4000 * 1000); // each character is searched a bounded number of times, not once per later chunk
       expect(calls).toBe(1);
     });
 
@@ -1062,6 +1069,395 @@ describe('SitemapParser index children', () => {
     const p = new SitemapParser({ onRecords: () => undefined }, 2000, { maxBytes: 1e9, maxUrls: 4_010 });
     p.write(index(4_020));
     expect(p.overLimit).toBe(true);
-    expect(p.childOverflow).toBeGreaterThan(0);
+    expect(p.childOverflow).toBe(20);
+  });
+});
+
+describe('SitemapParser default limits', () => {
+  const MIB = 1024 * 1024;
+  const fedUrls = (n: number) => {
+    const p = new SitemapParser({ onRecords: () => {} });
+    for (let i = 0; i < n; i++) p.write(`https://a.com/${i}\n`);
+    return p;
+  };
+  const fedBytes = (total: number) => {
+    const p = new SitemapParser({ onRecords: () => {} });
+    const head = 'https://a.com/\n';
+    p.write(head);
+    for (let left = total - head.length; left > 0; left -= MIB) p.write('x'.repeat(Math.min(left, MIB)));
+    return p;
+  };
+
+  it('accepts exactly 150,000 urls and stops at the one after', () => {
+    const exact = fedUrls(150_000);
+    expect(exact.overLimit).toBe(false);
+    expect(exact.finish()).toMatchObject({ truncated: false, stats: { urlCount: 150_000 } });
+    const over = fedUrls(150_001);
+    expect(over.overLimit).toBe(true);
+    expect(over.finish()).toMatchObject({ truncated: true, stats: { urlCount: 150_001 } });
+  });
+
+  it('accepts exactly 150 MiB and stops at the byte after', () => {
+    const exact = fedBytes(150 * MIB);
+    expect(exact.overLimit).toBe(false);
+    expect(exact.finish()).toMatchObject({ truncated: false, stats: { byteSize: 150 * MIB } });
+    const over = fedBytes(150 * MIB + 1);
+    expect(over.overLimit).toBe(true);
+    expect(over.finish()).toMatchObject({ truncated: true, stats: { byteSize: 150 * MIB + 1 } });
+  });
+
+  it('keeps the default of the limit a partial override leaves out', () => {
+    const p = new SitemapParser({ onRecords: () => {} }, 2000, { maxUrls: 2 });
+    p.write('x'.repeat(MIB));
+    expect(p.overLimit).toBe(false);
+  });
+});
+
+describe('SitemapParser getters and early settling', () => {
+  const NS = 'xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"';
+
+  it('reports the root kind and the rows started so far', () => {
+    const p = new SitemapParser({ onRecords: () => {} });
+    expect([p.rootKind, p.rowCount]).toEqual(['unknown', 0]);
+    p.write(`<sitemapindex ${NS}>\n<sitemap>\n`);
+    expect(p.rootKind).toBe('sitemapindex');
+    expect(p.rowCount).toBe(2);
+    const q = new SitemapParser({ onRecords: () => {} });
+    q.write(`<urlset ${NS}>\n<url>\n<loc>https://a.com/</loc>\n`);
+    expect(q.rootKind).toBe('urlset');
+    expect(q.rowCount).toBe(3);
+    const text = new SitemapParser({ onRecords: () => {} });
+    text.write('https://a.com/1\nhttps://a.com/2\n');
+    expect([text.rootKind, text.rowCount]).toEqual(['urlset', 2]);
+  });
+
+  it('settles a short body that starts with < without waiting for more', () => {
+    const p = new SitemapParser({ onRecords: () => {} }, 2000, { maxBytes: 2 });
+    p.write('<a/>');
+    expect(p.overLimit).toBe(true);
+  });
+
+  it('settles on a blank run past 65,536 characters even when nothing else has arrived', () => {
+    const over = new SitemapParser({ onRecords: () => {} }, 2000, { maxBytes: 100 });
+    over.write(' '.repeat(65_537));
+    expect(over.overLimit).toBe(true);
+    const under = new SitemapParser({ onRecords: () => {} }, 2000, { maxBytes: 100 });
+    under.write(' '.repeat(65_536));
+    expect(under.overLimit).toBe(false);
+  });
+});
+
+describe('SitemapParser UTF-8 length', () => {
+  const bytesOf = (s: string) => {
+    const p = new SitemapParser({ onRecords: () => {} });
+    p.write(s);
+    return p.finish().stats.byteSize;
+  };
+
+  it('counts a lone surrogate as 2 bytes and every other unit as its UTF-8 length', () => {
+    const lone = '\udc00';
+    const cases: [string, number][] = [
+      ['\u007f', 1], ['\u0080', 2], ['߿', 2], ['ࠀ', 3], ['퟿', 3], ['\ud800', 2], ['\udbff', 2], ['\udfff', 2], ['', 3], ['￿', 3],
+    ];
+    for (const [ch, bytes] of cases) expect(bytesOf(lone + ch), `U+${ch.charCodeAt(0).toString(16)}`).toBe(2 + bytes);
+    expect(bytesOf(`${lone}\u{1f600}`)).toBe(2 + 4);
+  });
+
+  it('counts well-formed text the way an encoder does', () => {
+    for (const ch of ['\u007f', '\u0080', '߿', 'ࠀ', '퟿', '', '￿', '\u{10000}', '\u{10ffff}']) {
+      expect(bytesOf(`a${ch}b`), `U+${ch.codePointAt(0)!.toString(16)}`).toBe(Buffer.byteLength(`a${ch}b`));
+    }
+  });
+});
+
+describe('SitemapParser plain-text sitemap edges', () => {
+  const rows = (text: string, chunk: number) => parse(text, 2000, chunk).records.map((r) => [r.loc, r.line]);
+
+  it('accepts http:// and https:// starts in any case, but not a scheme with something glued before it', () => {
+    const http = parse('http://a.com/1\nHTTP://a.com/2\n');
+    expect(http.result.text).toBe(true);
+    expect(http.records.map((r) => r.loc)).toEqual(['http://a.com/1', 'HTTP://a.com/2']);
+    for (const body of ['xhttp://a.com/1\nhttps://a.com/2', 'ftp://a.com/1\nhttps://a.com/2', 'htt://a.com/1\nhttps://a.com/2']) {
+      const { result, records } = parse(body);
+      expect(result.text, body).toBe(false);
+      expect(records, body).toEqual([]);
+      expect(result.issues.at(-1)?.detail, body).toBe('no-root');
+    }
+  });
+
+  it('numbers a url after a blank line by its row, at any chunking', () => {
+    const text = 'https://a.com/1\n\nhttps://a.com/2';
+    for (const chunk of [text.length, 16, 17, 1]) expect(rows(text, chunk), String(chunk)).toEqual([['https://a.com/1', 1], ['https://a.com/2', 3]]);
+  });
+
+  it('numbers urls after leading newlines by their rows', () => {
+    const text = '\nhttps://a.com/1\nhttps://a.com/2';
+    for (const chunk of [text.length, 5, 1]) expect(rows(text, chunk), String(chunk)).toEqual([['https://a.com/1', 2], ['https://a.com/2', 3]]);
+    expect(rows('\n\nhttps://a.com/1', 100)).toEqual([['https://a.com/1', 3]]);
+  });
+
+  it('counts a LF that opens a chunk as its own break after a LF, but as part of the break after a CR', () => {
+    const feed = (parts: string[]) => {
+      const records: UrlRecord[] = [];
+      const p = new SitemapParser({ onRecords: (r) => records.push(...r) });
+      for (const part of parts) p.write(part);
+      p.finish();
+      return records.map((r) => [r.loc, r.line]);
+    };
+    expect(feed(['https://a.com/1\n', '\nhttps://a.com/2'])).toEqual([['https://a.com/1', 1], ['https://a.com/2', 3]]);
+    expect(feed(['https://a.com/1\r', '\nhttps://a.com/2'])).toEqual([['https://a.com/1', 1], ['https://a.com/2', 2]]);
+    expect(feed(['https://a.com/1\r', '\n\nhttps://a.com/2'])).toEqual([['https://a.com/1', 1], ['https://a.com/2', 3]]);
+    expect(feed(['https://a.com/1\r\n', '\nhttps://a.com/2'])).toEqual([['https://a.com/1', 1], ['https://a.com/2', 3]]);
+    expect(feed(['https://a.com/1\n\r', '\nhttps://a.com/2'])).toEqual([['https://a.com/1', 1], ['https://a.com/2', 3]]);
+  });
+
+  it('scans a chunk for each kind of line break once per break, not once per line', () => {
+    const searches = (text: string) => {
+      const counts = { lf: 0, cr: 0 };
+      const original = String.prototype.indexOf;
+      const spy = vi.spyOn(String.prototype, 'indexOf').mockImplementation(function (this: string, ...args: Parameters<string['indexOf']>) {
+        if (this === text) counts[args[0] === '\n' ? 'lf' : 'cr']++;
+        return original.apply(this, args);
+      });
+      try {
+        const p = new SitemapParser({ onRecords: () => {} });
+        p.write(text);
+        p.finish();
+      } finally { spy.mockRestore(); }
+      return counts;
+    };
+    const lines = Array.from({ length: 50 }, (_, i) => `https://a.com/${i}`);
+    expect(searches(lines.join('\n') + '\n')).toEqual({ lf: 50, cr: 1 });
+    expect(searches(lines.join('\r') + '\r')).toEqual({ lf: 1, cr: 50 });
+    expect(searches(lines.join('\r\n') + '\r\n')).toEqual({ lf: 50, cr: 50 });
+  });
+});
+
+describe('SitemapParser structure edge cases', () => {
+  const NS = 'xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"';
+  const XH = 'xmlns:xhtml="http://www.w3.org/1999/xhtml"';
+  const issuesOf = (xml: string, code?: string) => parse(xml).result.issues.filter((i) => !code || i.code === code);
+  const urlOf = (loc: string) => `<url><loc>${loc}</loc></url>`;
+
+  it('accepts only utf-8 and us-ascii as encoding names, matched whole', () => {
+    const encodings = (name: string) => issuesOf(`<?xml version="1.0" encoding="${name}"?><urlset ${NS}></urlset>`, 'encoding-not-utf8').map((i) => i.params);
+    for (const ok of ['utf-8', 'UTF-8', 'us-ascii', 'US-ASCII']) expect(encodings(ok), ok).toEqual([]);
+    for (const bad of ['xutf-8', 'utf-8x', 'xus-ascii', 'us-asciix', 'ascii', 'utf8']) expect(encodings(bad), bad).toEqual([{ encoding: bad }]);
+  });
+
+  it('cuts a declared encoding name to 64 characters', () => {
+    const encodingOf = (n: number) => issuesOf(`<?xml version="1.0" encoding="${'e'.repeat(n)}"?><urlset ${NS}></urlset>`, 'encoding-not-utf8')[0]!.params['encoding'];
+    expect(encodingOf(63)).toBe('e'.repeat(63));
+    expect(encodingOf(64)).toBe('e'.repeat(64));
+    expect(encodingOf(65)).toBe('e'.repeat(64));
+  });
+
+  it('reports a closing tag after the root as unexpected, each one, but not after other content', () => {
+    const { result, lines } = parse(`<urlset ${NS}>${urlOf('https://a.com/')}</urlset>\n</a></b>`);
+    expect(result.issues).toEqual([
+      { code: 'xml-error', detail: 'unexpected-close', line: lines.length - 1, params: { tag: 'a' }, message: 'unexpected closing tag </a>' },
+      { code: 'xml-error', detail: 'unexpected-close', line: lines.length, params: { tag: 'b' }, message: 'unexpected closing tag </b>' },
+    ]);
+    const after = parse(`<urlset ${NS}></urlset>x</a><b/></c>`).result.issues;
+    expect(after.map((i) => [i.detail, i.params])).toEqual([['content-after-root', {}]]);
+  });
+
+  it('describes unclosed elements in the singular and the plural', () => {
+    const message = (n: number) => issuesOf(`<urlset ${NS}>${'<g>'.repeat(n)}`, 'xml-error')[0]!.message;
+    expect(message(0)).toBe('1 element left unclosed at end of document, innermost <urlset> (truncated file?)');
+    expect(message(1)).toBe('2 elements left unclosed at end of document, innermost <g> (truncated file?)');
+    expect(message(1500)).toBe('1,501 elements left unclosed at end of document, innermost <g> (truncated file?)');
+  });
+
+  it('keeps 64 open elements on the stack and only counts the ones past that', () => {
+    const unclosed = (n: number) => issuesOf(`<urlset ${NS}>${Array.from({ length: n }, (_, i) => `<e${i + 1}>`).join('')}`, 'xml-error')[0]!.params;
+    expect(unclosed(62)).toEqual({ count: 63, tag: 'e62' });
+    expect(unclosed(63)).toEqual({ count: 64, tag: 'e63' });
+    expect(unclosed(64)).toEqual({ count: 65, tag: 'e63' });
+    expect(unclosed(65)).toEqual({ count: 66, tag: 'e63' });
+  });
+
+  it('gives an empty document a finding without a line, and no lastmod share', () => {
+    const { result } = parse('');
+    expect(result.issues).toStrictEqual([{ code: 'root-element', detail: 'no-root', params: {}, message: 'no root element found: the document is empty or not XML, expected <urlset> or <sitemapindex>' }]);
+    expect(result.stats.topLastmodShare).toBe(0);
+    expect(parse(`<urlset ${NS}>${urlOf('https://a.com/')}</urlset>`).result.stats.topLastmodShare).toBe(0);
+  });
+
+  it('treats unprefixed children of a prefixed root as sitemap elements', () => {
+    const { records, result } = parse(`<s:urlset xmlns:s="http://www.sitemaps.org/schemas/sitemap/0.9">${urlOf('https://a.com/1')}<s:url><s:loc>https://a.com/2</s:loc></s:url></s:urlset>`);
+    expect(records.map((r) => r.loc)).toEqual(['https://a.com/1', 'https://a.com/2']);
+    expect(result.issues).toEqual([]);
+  });
+
+  it('trims the text of a <loc>', () => {
+    const { records } = parse(`<urlset ${NS}><url><loc>\n  https://a.com/1 \t</loc></url></urlset>`);
+    expect(records.map((r) => r.loc)).toEqual(['https://a.com/1']);
+  });
+
+  it('names the innermost wrapper of a misplaced entry, with the full issue', () => {
+    const { result, lines } = parse(`<urlset ${NS}><a><b>${urlOf('https://a.com/1')}</b></a></urlset>`);
+    expect(result.issues).toEqual([{
+      code: 'misplaced-element', detail: 'misplaced-element', line: lineOf(lines, '<url>'), params: { parent: 'b' },
+      message: 'unexpected entry or text inside <b>; entries belong directly under the root element',
+    }]);
+    const index = parse(`<sitemapindex ${NS}><a><b><sitemap><loc>https://a.com/s.xml</loc></sitemap></b></a></sitemapindex>`).result;
+    expect(index.issues.map((i) => [i.detail, i.params])).toEqual([['misplaced-element', { parent: 'b' }]]);
+    expect(index.children.map((c) => c.loc)).toEqual(['https://a.com/s.xml']);
+  });
+
+  it('does not call other elements misplaced', () => {
+    for (const xml of [
+      `<urlset ${NS}><a><b><c><d/></c></b></a>${urlOf('https://a.com/1')}</urlset>`,
+      `<sitemapindex ${NS}><a><b><c><d/></c></b></a><sitemap><loc>https://a.com/s.xml</loc></sitemap></sitemapindex>`,
+      `<urlset ${NS}><a><b><x:url/></b></a></urlset>`,
+    ]) expect(issuesOf(xml), xml).toEqual([]);
+  });
+
+  it('reports text directly under the root with the full issue, and not whitespace', () => {
+    const { result } = parse(`<urlset ${NS}>\n\u00a0 stray\n${urlOf('https://a.com/1')}</urlset>`);
+    expect(result.issues).toEqual([{
+      code: 'misplaced-element', detail: 'misplaced-element', line: 1, params: { parent: 'urlset' },
+      message: 'unexpected entry or text inside <urlset>; entries belong directly under the root element',
+    }]);
+    expect(issuesOf(`<urlset ${NS}>\n\u00a0\t\u2003\n${urlOf('https://a.com/1')}\n</urlset>`)).toEqual([]);
+  });
+
+  it('forgets a missing close once its entry is closed or cut off, and reports misplaced entries again', () => {
+    const misplaced = (xml: string) => issuesOf(xml, 'misplaced-element').map((i) => i.params['parent']);
+    const open = '<url><loc>https://a.com/1</loc>';
+    expect(misplaced(`<urlset ${NS}>${open}${urlOf('https://a.com/2')}${urlOf('https://a.com/3')}</url></urlset>`)).toEqual([]);
+    expect(misplaced(`<urlset ${NS}>${open}${urlOf('https://a.com/2')}</url><a><b>${urlOf('https://a.com/3')}</b></a></urlset>`)).toEqual(['b']);
+    expect(misplaced(`<urlset ${NS}><wrap>${open}${urlOf('https://a.com/2')}</wrap></url><a><b>${urlOf('https://a.com/3')}</b></a></urlset>`)).toEqual(['wrap', 'b']);
+  });
+
+  it('reports every entry of a wrapper that follows a closed entry', () => {
+    const entries = ['https://a.com/1', 'https://a.com/2', 'https://a.com/3'].map(urlOf);
+    const { result, records } = parse(`<urlset ${NS}>${entries[0]}<wrap>${entries[1]}${entries[2]}</wrap></urlset>`);
+    expect(records.map((r) => r.loc)).toEqual(['https://a.com/1', 'https://a.com/2', 'https://a.com/3']);
+    expect(result.issues.map((i) => [i.detail, i.params])).toEqual([['misplaced-element', { parent: 'wrap' }], ['misplaced-element', { parent: 'wrap' }]]);
+  });
+
+  it('keeps tracking a missing close below the depth cap without blaming later entries', () => {
+    const deep = '<g>'.repeat(70);
+    const closes = '</g>'.repeat(70);
+    const { result } = parse(`<urlset ${NS}>${deep}<url><loc>https://a.com/1</loc><url><loc>https://a.com/2</loc></url>${closes}<a><b>${urlOf('https://a.com/3')}</b></a></urlset>`);
+    expect(result.issues.map((i) => i.detail)).toEqual(['url-not-closed', 'misplaced-element', 'close-mismatch']);
+    expect(result.issues[1]!.params).toEqual({ parent: 'b' });
+  });
+
+  it('does not read entries of a document whose root is not a sitemap', () => {
+    const html = parse(`<html><url><loc>https://a.com/1</loc></url><sitemap><loc>https://a.com/s.xml</loc></sitemap></html>`);
+    expect(html.records).toEqual([]);
+    expect(html.result.children).toEqual([]);
+    expect(html.result.issues.map((i) => i.detail)).toEqual(['wrong-root']);
+  });
+
+  it('keeps no record for a <url> that never closed and had no <loc>', () => {
+    const { records, result } = parse(`<urlset ${NS}><url><lastmod>2026-01-01</lastmod><url><loc>https://a.com/2</loc></url></urlset>`);
+    expect(records).toEqual([{ loc: 'https://a.com/2', line: 4 }]);
+    expect(result.stats.urlCount).toBe(1);
+  });
+
+  it('describes a <url> opened before the previous one closed', () => {
+    const { result } = parse(`<urlset ${NS}>\n<url><loc>https://a.com/1</loc>\n<url><loc>https://a.com/2</loc></url></urlset>`);
+    expect(result.issues[0]).toEqual({
+      code: 'xml-error', detail: 'url-not-closed', line: 4, params: { line: '4', openLine: '2' },
+      message: '<url> opened at line 4 before the <url> from line 2 was closed',
+    });
+  });
+
+  it('ignores text after a self-closed <loc/> that a stray close tag would otherwise adopt', () => {
+    const { records, result } = parse(`<urlset ${NS}><url><loc/>https://a.com/x</loc></url></urlset>`);
+    expect(records).toEqual([]);
+    expect(result.issues.map((i) => [i.detail, i.params])).toEqual([['close-mismatch', { tag: 'loc', open: 'url' }], ['url-without-loc', {}]]);
+  });
+
+  it('reads only xhtml links with rel="alternate" as alternates, inside a <url>', () => {
+    const xml = `<urlset ${NS} ${XH}><xhtml:link rel="alternate" hreflang="zz" href="https://a.com/outside"/><url><loc>https://a.com/</loc>`
+      + '<xhtml:link rel="nofollow" hreflang="de" href="https://a.com/de"/><xhtml:a rel="alternate" hreflang="fr" href="https://a.com/fr"/>'
+      + '<xhtml:link rel="alternate" href="https://a.com/none"/><xhtml:link rel="alternate" hreflang="it" href="https://a.com/it"/></url><xhtml:link rel="alternate" hreflang="zz" href="https://a.com/after"/></urlset>';
+    const { records, result } = parse(xml);
+    expect(records[0]!.alternates).toEqual([{ hreflang: '', href: 'https://a.com/none' }, { hreflang: 'it', href: 'https://a.com/it' }]);
+    expect(result.issues).toEqual([]);
+  });
+
+  it('names a non-xhtml alternate link by its first 100 characters, with the full issue', () => {
+    const tag = `${'p'.repeat(150)}:link`;
+    const { result } = parse(`<urlset ${NS}><url><loc>https://a.com/</loc><${tag} rel="alternate" hreflang="de" href="https://a.com/de"/></url></urlset>`);
+    const shown = tag.slice(0, 100);
+    expect(result.issues).toEqual([{
+      code: 'alternate-wrong-namespace', detail: 'alternate-wrong-namespace', line: 4, params: { name: shown },
+      message: `<${shown} rel="alternate"> is not in the xhtml namespace (http://www.w3.org/1999/xhtml), so it is not read as an hreflang alternate`,
+    }]);
+  });
+
+  it('cuts a field to 8,192 characters, whichever field it is', () => {
+    const fieldOf = (field: string, n: number) => (parse(`<urlset ${NS}><url><loc>https://a.com/</loc><${field}>${'1'.repeat(n)}</${field}></url></urlset>`).records[0] as unknown as Record<string, string>)[field];
+    for (const field of ['lastmod', 'changefreq', 'priority']) {
+      expect(fieldOf(field, 8191), field).toBe('1'.repeat(8191));
+      expect(fieldOf(field, 8192), field).toBe('1'.repeat(8192));
+      expect(fieldOf(field, 8193), field).toBe('1'.repeat(8192));
+    }
+  });
+
+  it('keeps a child and its lastmod when an unrelated element closes inside the <sitemap>', () => {
+    const { result } = parse(`<sitemapindex ${NS}><sitemap><loc>https://a.com/s.xml</loc><x><y/></x><lastmod>2026-01-01</lastmod></sitemap></sitemapindex>`);
+    expect(result.children).toEqual([{ loc: 'https://a.com/s.xml', lastmod: '2026-01-01', line: 2 }]);
+    expect(result.childOverflow).toBe(0);
+    const prefixed = parse(`<sitemapindex ${NS}><sitemap><loc>https://a.com/s.xml</loc><z:sitemap/><lastmod>2026-01-01</lastmod></z:sitemap></sitemap></sitemapindex>`).result;
+    expect(prefixed.children.map((c) => c.lastmod)).toEqual(['2026-01-01']);
+  });
+
+  it('ignores entries of the other kind nested inside an entry, and reports them elsewhere', () => {
+    expect(issuesOf(`<urlset ${NS}><url><loc>https://a.com/1</loc><sitemap><x/></sitemap></url></urlset>`)).toEqual([]);
+    expect(issuesOf(`<sitemapindex ${NS}><sitemap><loc>https://a.com/s.xml</loc><url><x/></url></sitemap></sitemapindex>`)).toEqual([]);
+    expect(issuesOf(`<sitemapindex ${NS}><foo:url/></sitemapindex>`)).toEqual([]);
+    const after = issuesOf(`<sitemapindex ${NS}><sitemap><loc>https://a.com/s.xml</loc></sitemap><url><loc>https://a.com/1</loc></url></sitemapindex>`);
+    expect(after.map((i) => [i.detail, i.params])).toEqual([['wrong-entry-kind', { found: 'url', root: 'sitemapindex' }]]);
+  });
+
+  it('cuts the uri of an unknown extension namespace to 300 characters', () => {
+    const uri = `http://www.google.com/schemas/sitemap-image/${'x'.repeat(400)}`;
+    const { result } = parse(`<urlset ${NS} xmlns:image="${uri}"></urlset>`);
+    expect(result.issues).toEqual([{
+      code: 'extension-namespace-unknown', detail: 'extension-namespace-unknown', line: 1, params: { prefix: 'image', uri: uri.slice(0, 300) },
+      message: `xmlns:image is bound to "${uri.slice(0, 300)}", which is not the namespace Google documents for it`,
+    }]);
+  });
+
+  it('groups alternates into a cluster whatever their order, and keeps their hrefs apart', () => {
+    const entry = (n: number, hrefs: string[]) => `<url><loc>https://a.com/${n}</loc>${hrefs.map((h) => `<xhtml:link rel="alternate" hreflang="en" href="${h}"/>`).join('')}</url>`;
+    const clusters = (...entries: string[]) => parse(`<urlset ${NS} ${XH}>${entries.join('')}</urlset>`).result.stats.clusterCount;
+    expect(clusters(entry(1, ['https://a.com/x', 'https://a.com/y']), entry(2, ['https://a.com/y', 'https://a.com/x']))).toBe(1);
+    expect(clusters(entry(1, ['a', 'bc']), entry(2, ['ab', 'c']))).toBe(2);
+  });
+
+  it('counts the lastmod share over urls with a lastmod only, and ties keep the first instant', () => {
+    const lm = (n: number, v?: string) => `<url><loc>https://a.com/${n}</loc>${v ? `<lastmod>${v}</lastmod>` : ''}</url>`;
+    const { result } = parse(`<urlset ${NS}>${lm(1)}${lm(2)}${lm(3, '2026-05-01T12:00:00Z')}</urlset>`);
+    expect(result.stats.topLastmodShare).toBe(1 / 3);
+    const tie = parse(`<urlset ${NS}>${lm(1, '2026-05-01T12:00:00Z')}${lm(2, '2026-05-01T13:00:00+01:00')}</urlset>`).result.stats;
+    expect([tie.lastmodMin, tie.lastmodMax]).toEqual(['2026-05-01T12:00:00Z', '2026-05-01T12:00:00Z']);
+  });
+
+  it('tracks 1,000 distinct lastmod values and counts only those afterwards', () => {
+    const share = (distinct: number) => {
+      const urls = Array.from({ length: distinct + 5 }, (_, i) => `<url><loc>https://a.com/${i}</loc><lastmod>${i < distinct ? `v${i}` : 'late'}</lastmod></url>`).join('');
+      return parse(`<urlset ${NS}>${urls}</urlset>`, 2000, 65_536).result.stats.topLastmodShare;
+    };
+    expect(share(998)).toBe(5 / 1003);
+    expect(share(999)).toBe(5 / 1004);
+    expect(share(1000)).toBe(1 / 1005);
+  });
+
+  it('caps stored findings per code, independently of other codes', () => {
+    const dup = (n: number) => Array.from({ length: n }, (_, i) => `<url><loc>https://a.com/${i}</loc><loc>https://a.com/x</loc></url>`).join('');
+    const count = (n: number, code: string, extra = '') => issuesOf(`<urlset ${NS}>${dup(n)}${extra}</urlset>`, code).length;
+    expect(count(19, 'duplicate-field')).toBe(19);
+    expect(count(20, 'duplicate-field')).toBe(20);
+    expect(count(21, 'duplicate-field')).toBe(20);
+    expect(count(30, 'duplicate-field', '</a></b>')).toBe(20);
+    expect(count(30, 'xml-error', '</a></b>')).toBe(2);
   });
 });
