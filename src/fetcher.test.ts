@@ -1,6 +1,6 @@
 import { gzipSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { classifyHead, fetchTextStream, mediaType, NotUtf8Error, sniffSitemap } from './fetcher.js';
+import { classifyHead, fetchTextStream, mediaType, NotUtf8Error, sniffSitemap, type Transport } from './fetcher.js';
 
 function byteStream(...chunks: Uint8Array[]): ReadableStream<Uint8Array> {
   return new ReadableStream({ start(c) { for (const ch of chunks) c.enqueue(ch); c.close(); } });
@@ -34,10 +34,44 @@ describe('classifyHead', () => {
     expect(classifyHead('<!DOCTYPE urlset [<?>]><urlset>')).toBe('urlset'); // an empty processing instruction closes at once
     expect(classifyHead('<!DOCTYPE urlset [<!ENTITY a "b">')).toBe('not-sitemap'); // the head ends inside the subset
   });
+  it('reads the root name through a namespace prefix, in any case', () => {
+    expect(classifyHead('<s:urlset xmlns:s="http://www.sitemaps.org/schemas/sitemap/0.9">')).toBe('urlset');
+    expect(classifyHead('<ns:sitemapindex xmlns:ns="x">')).toBe('sitemapindex');
+    expect(classifyHead('<a:b:urlset>')).toBe('urlset');
+    expect(classifyHead('<S:URLSET>')).toBe('urlset');
+    expect(classifyHead('<s:html xmlns:s="x">')).toBe('not-sitemap');
+    expect(classifyHead('<> urlset')).toBe('not-sitemap');
+  });
+  it('skips a comment that holds a > and a declaration before the root', () => {
+    expect(classifyHead('<!-- a > b --><urlset>')).toBe('urlset');
+    expect(classifyHead('<?xml version="1.0"?>\n<!-- a > b -->\n<!FOO bar>\n<urlset>')).toBe('urlset');
+    expect(classifyHead('<!FOO bar><sitemapindex>')).toBe('sitemapindex');
+  });
+  it('reads past a DOCTYPE whose quotes, comments and processing instructions hide a ] or a >', () => {
+    expect(classifyHead('<!DOCTYPE urlset PUBLIC \'-//x>y\' \'http://a.com/x.dtd\'><urlset>')).toBe('urlset');
+    expect(classifyHead('<!DOCTYPE urlset [<!ENTITY a \'x]y\'>]><urlset>')).toBe('urlset');
+    expect(classifyHead('<!DOCTYPE urlset [<!ENTITY a "x]y">]><urlset>')).toBe('urlset');
+    expect(classifyHead('<!DOCTYPE urlset [<!-- ] > --><!ENTITY a "b">]><urlset>')).toBe('urlset');
+    expect(classifyHead('<!DOCTYPE urlset [<?pi ] > ?><!ENTITY a "b">]><urlset>')).toBe('urlset');
+    expect(classifyHead('<!DOCTYPE urlset [<!-->]><urlset>')).toBe('urlset'); // <!--> closes at once, like the tokenizer
+  });
+  it('ends on a DOCTYPE, comment, processing instruction or declaration the head never closes', () => {
+    expect(classifyHead('<!DOCTYPE urlset [<!-- never closed')).toBe('not-sitemap');
+    expect(classifyHead('<!DOCTYPE urlset [<?pi never closed')).toBe('not-sitemap');
+    expect(classifyHead('<!DOCTYPE urlset [<!ENTITY a "b"')).toBe('not-sitemap');
+    expect(classifyHead('<!DOCTYPE urlset')).toBe('not-sitemap');
+    expect(classifyHead('<!FOO bar')).toBe('not-sitemap');
+    expect(classifyHead('<!-- never closed')).toBe('not-sitemap');
+    expect(classifyHead('<?xml version="1.0"')).toBe('not-sitemap');
+    expect(classifyHead('<')).toBe('not-sitemap');
+    expect(classifyHead('   ')).toBe('not-sitemap');
+  });
   it('accepts a plain-text sitemap: first non-empty line is an absolute http(s) url, no markup', () => {
     expect(classifyHead('https://a.com/1\nhttps://a.com/2\n')).toBe('urlset');
     expect(classifyHead('\uFEFF\r\n  \r\nhttp://a.com/1\r\nhttp://a.com/2')).toBe('urlset');
     expect(classifyHead('https://a.com/' + 'x'.repeat(2000))).toBe('urlset'); // first line cut by the sniff window
+    expect(classifyHead('https://a.com/1  \t\nhttps://a.com/2')).toBe('urlset');
+    expect(classifyHead('https://a.com/1 ')).toBe('urlset');
   });
   it('rejects text, JSON and html that merely mention a url', () => {
     expect(classifyHead('Not found')).toBe('not-sitemap');
@@ -198,7 +232,7 @@ describe('fetchTextStream timeouts', () => {
     expect(stalled.settled).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
     expect(stalled.settled).toBe(true);
-    expect(stalled.error).toMatchObject({ name: 'TimeoutError' });
+    expect(stalled.error).toMatchObject({ name: 'TimeoutError', message: 'timeout' });
   });
   it('times out with a TimeoutError exactly one idle limit after the request when the headers never come', async () => {
     hangingFetch();
@@ -206,7 +240,7 @@ describe('fetchTextStream timeouts', () => {
     await vi.advanceTimersByTimeAsync(29);
     expect(outcome.settled).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
-    expect(outcome.error).toMatchObject({ name: 'TimeoutError' });
+    expect(outcome.error).toMatchObject({ name: 'TimeoutError', message: 'timeout' });
     expect(vi.getTimerCount()).toBe(0);
   });
   it('aborts the request and a pending read with the caller\'s own reason when its signal aborts', async () => {
@@ -238,6 +272,50 @@ describe('fetchTextStream timeouts', () => {
   });
 });
 
+describe('fetchTextStream resources', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  const signalTransport = (res: () => Response, seen: { signal?: AbortSignal }): Transport => (url, init) => {
+    seen.signal = init.signal!;
+    return Promise.resolve({ res: res(), finalUrl: url, redirected: false });
+  };
+
+  it('leaves no timer behind after an error status', async () => {
+    mockFetch(byteStream(enc('nope')), { status: 404 });
+    expect((await fetchTextStream('https://a.com/sitemap.xml')).ok).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    mockFetch(null, { status: 500 });
+    expect((await fetchTextStream('https://a.com/sitemap.xml')).ok).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it('stops listening to the caller\'s signal once the fetch is over, however it ended', async () => {
+    const ends: [string, () => Response, (r: Awaited<ReturnType<typeof fetchTextStream>>) => Promise<unknown>][] = [
+      ['an error status', () => new Response('nope', { status: 404 }), () => Promise.resolve()],
+      ['a drained body', () => new Response('<urlset/>'), (r) => drain(r.stream!)],
+      ['a cancelled body', () => new Response('<urlset/>'), (r) => r.stream!.cancel()],
+    ];
+    for (const [name, res, finish] of ends) {
+      const seen: { signal?: AbortSignal } = {};
+      const outer = new AbortController();
+      await finish(await fetchTextStream('https://a.com/sitemap.xml', { transport: signalTransport(res, seen), signal: outer.signal }));
+      expect(seen.signal!.aborted, name).toBe(false);
+      outer.abort(new Error('late'));
+      expect(seen.signal!.aborted, name).toBe(false);
+    }
+  });
+  it('does not run the idle timer while the consumer has not asked for the first read', async () => {
+    slowFetch([{ wait: 5, data: enc('<a1/>') }, { wait: 200, data: enc('<a2/>') }]);
+    const opened = fetchTextStream('https://a.com/sitemap.xml', { timeoutMs: 60 });
+    await vi.advanceTimersByTimeAsync(5);
+    const r = await opened;
+    await vi.advanceTimersByTimeAsync(500);
+    const run = drain(r.stream!);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(await run).toBe('<a1/><a2/>');
+  });
+});
+
 describe('fetchTextStream total cap', () => {
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });
@@ -255,7 +333,7 @@ describe('fetchTextStream total cap', () => {
     expect(reads).toBe(7); // pieces at 20, 40 ... 140 ms
     await vi.advanceTimersByTimeAsync(1);
     expect(outcome.settled).toBe(true);
-    expect(outcome.error).toMatchObject({ name: 'TimeoutError' });
+    expect(outcome.error).toMatchObject({ name: 'TimeoutError', message: 'timeout' });
     expect(reads).toBe(7);
   });
   it('also ends a fetch whose headers drag past the cap, exactly at the cap', async () => {
@@ -264,7 +342,7 @@ describe('fetchTextStream total cap', () => {
     await vi.advanceTimersByTimeAsync(29);
     expect(outcome.settled).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
-    expect(outcome.error).toMatchObject({ name: 'TimeoutError' });
+    expect(outcome.error).toMatchObject({ name: 'TimeoutError', message: 'timeout' });
   });
   it('leaves no timer behind after a drained body, a cancelled one or a failed one', async () => {
     mockFetch(byteStream(enc('<urlset>'), enc('</urlset>')));
@@ -346,7 +424,46 @@ describe('fetchTextStream encoding', () => {
     const settled = pulls;
     await flush(); await flush();
     expect(pulls).toBe(settled); // nothing keeps reading an endless body
-    expect(settled).toBeLessThanOrEqual(3); // the first chunk plus the stream's own read-ahead
+    expect(settled).toBe(3); // the first chunk plus the read-ahead of the three streams in the chain
+  });
+  it('names the encoding in the error message', async () => {
+    mockFetch(byteStream(utf16le('<urlset></urlset>')));
+    const failure = await drain((await fetchTextStream('https://a.com/sitemap.xml')).stream!).catch((e: unknown) => e);
+    expect(failure).toMatchObject({ name: 'NotUtf8Error', message: 'not UTF-8 (UTF-16)' });
+  });
+  it('tells UTF-16 from UTF-32 by the third and fourth byte', async () => {
+    mockFetch(byteStream(new Uint8Array([0xff, 0xfe, 0, 0x41, 0, 0x42])));
+    await expect(drain((await fetchTextStream('https://a.com/sitemap.xml')).stream!)).rejects.toMatchObject({ encoding: 'UTF-16' });
+    mockFetch(byteStream(new Uint8Array([0xff, 0xfe, 0x41, 0])));
+    await expect(drain((await fetchTextStream('https://a.com/sitemap.xml')).stream!)).rejects.toMatchObject({ encoding: 'UTF-16' });
+    mockFetch(byteStream(new Uint8Array([0xff, 0xfe, 0])));
+    await expect(drain((await fetchTextStream('https://a.com/sitemap.xml')).stream!)).rejects.toMatchObject({ encoding: 'UTF-16' });
+  });
+  it('reads a body whose first bytes only resemble a byte order mark as UTF-8', async () => {
+    for (const bytes of [
+      [0xff, 0x41, 0x42, 0x43], [0x41, 0xfe, 0x42, 0x43], [0xfe, 0x41, 0x42, 0x43], [0x41, 0xff, 0x42, 0x43],
+      [0, 0, 0xfe, 0x41], [0, 0, 0x41, 0xff], [0, 0x41, 0xfe, 0xff], [0x41, 0, 0xfe, 0xff], [0x41, 0x42, 0xfe, 0x43], [0, 0x41, 0x42, 0x43],
+    ]) {
+      const body = new Uint8Array(bytes);
+      mockFetch(byteStream(body));
+      expect(await drain((await fetchTextStream('https://a.com/sitemap.xml')).stream!), bytes.join()).toBe(new TextDecoder().decode(body));
+    }
+  });
+  it('looks for the mark in the first bytes only, not at the start of a later chunk', async () => {
+    const later = new Uint8Array([0xff, 0xfe, 0x41, 0x42]);
+    mockFetch(byteStream(enc('<a/>'), later));
+    expect(await drain((await fetchTextStream('https://a.com/sitemap.xml')).stream!)).toBe(`<a/>${new TextDecoder().decode(later)}`);
+    mockFetch(byteStream(enc('<'), enc('a/'), enc('>'), later));
+    expect(await drain((await fetchTextStream('https://a.com/sitemap.xml')).stream!)).toBe(`<a/>${new TextDecoder().decode(later)}`);
+  });
+  it('does not take a body for gzip unless both magic bytes match', async () => {
+    for (const bytes of [[0x41, 0x8b, 0x42, 0x43], [0x1f, 0x41, 0x42, 0x43], [0x8b, 0x1f, 0x42, 0x43], [0x1f]]) {
+      const body = new Uint8Array(bytes);
+      mockFetch(byteStream(body));
+      const r = await fetchTextStream('https://a.com/sitemap.xml');
+      expect(r.gzip, bytes.join()).toBe(false);
+      expect(await drain(r.stream!)).toBe(new TextDecoder().decode(body));
+    }
   });
   it('fails a body that is only a byte order mark and nothing else', async () => {
     mockFetch(byteStream(new Uint8Array([0xff, 0xfe])));
@@ -379,7 +496,7 @@ describe('sniffSitemap', () => {
       sniff: 'urlset', status: 200, finalUrl: 'https://a.com/final.xml', redirected: true, gzip: false, lastModified: 'Wed, 01 Jul 2026 00:00:00 GMT', contentType: 'text/xml', size: null,
     });
     await vi.waitFor(() => { expect(cancelled).toBe(true); });
-    expect(pulls).toBeLessThanOrEqual(10);
+    expect(pulls).toBe(6); // the head, then the read-ahead of the streams in the chain
   });
   it('sniffs a sitemapindex', async () => {
     mockFetch(byteStream(enc('<?xml version="1.0"?><sitemapindex xmlns="ns"><sitemap/></sitemapindex>')));
@@ -474,6 +591,27 @@ describe('sniffSitemap size', () => {
     rangeServer(() => partial(XML_HEAD.slice(0, 2048), 'bytes 0-2047/12x'));
     expect((await sniffSitemap('https://a.com/s.xml')).size).toBeNull();
   });
+  it('reads a Content-Range with extra spaces, zero padding or non-ASCII outer whitespace', async () => {
+    for (const range of ['bytes  0-2047/9000', 'bytes 00-2047/9000', '\u00a0bytes 0-2047/9000\u00a0']) {
+      rangeServer(() => partial(XML_HEAD.slice(0, 2048), range));
+      expect(await sniffSitemap('https://a.com/s.xml'), range).toMatchObject({ sniff: 'urlset', size: 9000 });
+      expect(vi.mocked(fetch), range).toHaveBeenCalledTimes(1);
+    }
+  });
+  it('takes only a plain run of digits for a Content-Length, after trimming', async () => {
+    for (const length of ['-5', '1e3', '0x10', '12x', '1 2', '', '1'.repeat(16)]) {
+      rangeServer(() => new Response(XML_HEAD, { status: 200, headers: { 'content-length': length } }));
+      expect((await sniffSitemap('https://a.com/s.xml')).size, length).toBeNull();
+    }
+    rangeServer(() => new Response(XML_HEAD, { status: 200, headers: { 'content-length': '\u00a04096\u00a0' } }));
+    expect((await sniffSitemap('https://a.com/s.xml')).size).toBe(4096);
+    rangeServer(() => new Response(XML_HEAD, { status: 200, headers: { 'content-length': '0' } }));
+    expect((await sniffSitemap('https://a.com/s.xml')).size).toBe(0);
+  });
+  it('passes a 2xx status other than 200 through', async () => {
+    rangeServer(() => new Response(XML_HEAD, { status: 202 }));
+    expect(await sniffSitemap('https://a.com/s.xml')).toMatchObject({ sniff: 'urlset', status: 202 });
+  });
   it('cancels the body after the head, though the server ignored the range and sends the whole file', async () => {
     let cancelled = false;
     let pulls = 0;
@@ -509,6 +647,42 @@ describe('sniffSitemap size', () => {
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
     expect(rangeOf(0)).toBe('bytes=0-2047');
     expect(rangeOf(1)).toBeNull();
+  });
+  it('asks again only once: a plain GET that answers 416 or an unusable 206 itself is the answer', async () => {
+    rangeServer(() => new Response(null, { status: 416 }));
+    expect(await sniffSitemap('https://a.com/x.xml')).toMatchObject({ sniff: 'http-error', status: 416 });
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+    rangeServer(() => new Response(XML_HEAD.slice(0, 2048), { status: 206, headers: { 'content-range': 'bytes 100-2047/9000' } }));
+    expect(await sniffSitemap('https://a.com/x.xml')).toMatchObject({ sniff: 'urlset', status: 200, size: null });
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+  });
+  it('says size 0 for an empty body only when a 416 refused the range', async () => {
+    const empty = () => new Response(new ReadableStream<Uint8Array>({ start(c) { c.close(); } }), { status: 200 });
+    rangeServer(() => empty());
+    expect(await sniffSitemap('https://a.com/empty.xml')).toMatchObject({ sniff: 'not-sitemap', status: 200, size: null });
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    rangeServer((range) => (range === null ? empty() : new Response(XML_HEAD.slice(0, 2048), { status: 206, headers: { 'content-range': 'bytes 100-2047/9000' } })));
+    expect(await sniffSitemap('https://a.com/empty.xml')).toMatchObject({ sniff: 'not-sitemap', size: null });
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+  });
+  it('does not say size 0 for a plain GET that has a body but no length after a 416', async () => {
+    rangeServer((range) => (range === null ? new Response(new ReadableStream<Uint8Array>({ start(c) { c.enqueue(enc('<urlset/>')); c.close(); } }), { status: 200 }) : new Response(null, { status: 416 })));
+    expect(await sniffSitemap('https://a.com/s.xml')).toMatchObject({ sniff: 'urlset', size: null });
+  });
+  it('asks only once more for a head the range cut: a reread that answers 416 or a 206 is the answer', async () => {
+    const cutHead = () => partial('<?xml version="1.0"?><!-- short -->', 'bytes 0-9/*');
+    rangeServer((range) => (range ? cutHead() : new Response(null, { status: 416 })));
+    expect(await sniffSitemap('https://a.com/x.xml')).toMatchObject({ sniff: 'http-error', status: 416 });
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+    rangeServer((range) => (range ? cutHead() : partial('<?xml version="1.0"?><!-- short -->', 'bytes 0-9/*')));
+    expect(await sniffSitemap('https://a.com/x.xml')).toMatchObject({ sniff: 'not-sitemap', status: 200 });
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+  });
+  it('trusts the Content-Length of the plain GET over the empty body a 416 implies', async () => {
+    rangeServer((range) => (range === null
+      ? new Response(new ReadableStream<Uint8Array>({ start(c) { c.close(); } }), { status: 200, headers: { 'content-length': '5' } })
+      : new Response(null, { status: 416 })));
+    expect(await sniffSitemap('https://a.com/empty.xml')).toMatchObject({ sniff: 'not-sitemap', size: 5 });
   });
   it('maps a 416 that the plain GET also fails to an http-error, and keeps the usual failures', async () => {
     rangeServer((range) => new Response(null, { status: range ? 416 : 404 }));
@@ -587,6 +761,13 @@ describe('sniffSitemap size', () => {
       rangeServer((range) => (range === 'bytes=-4' ? partial(small.slice(-4), `bytes ${small.length - 4}-${small.length - 1}/${small.length}`) : partial(small.slice(), `bytes 0-${small.length - 1}/${small.length}`)));
       expect(await sniffSitemap('https://a.com/x.gz')).toMatchObject({ sniff: 'not-sitemap', gzip: true, size: '<html><body>nope</body></html>'.length });
     });
+    it('fails a ranged gzip head that errors before anything was inflated', async () => {
+      rangeServer(() => partial(new ReadableStream<Uint8Array>({
+        start(c) { c.enqueue(gz.slice(0, 2)); },
+        pull() { return new Promise((resolve) => { setTimeout(resolve, 5); }).then(() => { throw new TypeError('unexpected end of file'); }); },
+      }), `bytes 0-2047/${gz.length}`));
+      expect(await sniffSitemap('https://a.com/s.xml.gz')).toEqual({ sniff: 'network-error' });
+    });
     it('keeps what was inflated when the cut-off stream ends in an error', async () => {
       const cut = gz.slice(0, 150); // inflates to well under the 2,048-character head, so the read reaches the error
       rangeServer((range) => (range === 'bytes=-4' ? partial(isize.slice(), 'bytes 1-4/5') : partial(new ReadableStream<Uint8Array>({
@@ -629,6 +810,53 @@ describe('sniffSitemap size', () => {
       await sniffSitemap('https://a.com/s.xml');
       expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
     });
+    it('says what a cut head is once the plain GET has read it, for each kind of prolog', async () => {
+      for (const prolog of [
+        `<!DOCTYPE urlset [<!-- ${'x'.repeat(2500)} -->]>`, `<!DOCTYPE urlset [<?pi ${'x'.repeat(2500)}?>]>`, `<!FOO ${'x'.repeat(2500)}>`,
+        `<!DOCTYPE urlset [<!ENTITY a "${'x'.repeat(2500)}">]>`, '<!-->'.repeat(500),
+      ]) {
+        honouring(`${prolog}${SITEMAP}`);
+        expect((await sniffSitemap('https://a.com/s.xml')).sniff, prolog.slice(0, 20)).toBe('urlset');
+        expect(vi.mocked(fetch), prolog.slice(0, 20)).toHaveBeenCalledTimes(2);
+      }
+    });
+    it('reads again for a head that is only white space, and for one that ends on the < of the root', async () => {
+      honouring(`${' '.repeat(2100)}${SITEMAP}`);
+      expect((await sniffSitemap('https://a.com/s.xml')).sniff).toBe('urlset');
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+      honouring(`<?xml version="1.0"?>${' '.repeat(2026)}${SITEMAP}`);
+      expect((await sniffSitemap('https://a.com/s.xml')).sniff).toBe('urlset');
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+    });
+    it('does not read again for a head that ends on a character that cannot start a root', async () => {
+      rangeServer(() => partial(`<?xml version="1.0"?>${' '.repeat(2026)}x`, 'bytes 0-2047/9000'));
+      expect((await sniffSitemap('https://a.com/s.xml')).sniff).toBe('not-sitemap');
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    });
+    it('reads again when a head the whole file fits in is not known to be the whole file', async () => {
+      rangeServer((range) => (range === null ? new Response('<!-- c --><urlset/>', { status: 200 }) : partial('<!-- c -->', 'bytes 0-9/*')));
+      expect(await sniffSitemap('https://a.com/s.xml')).toMatchObject({ sniff: 'urlset', size: null });
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+    });
+    it('takes a head the ranged answer filled to the last byte of the file as complete, though it holds fewer than 2,048 characters', async () => {
+      const doc = `<!-- ${'п'.repeat(1000)} -->${' '.repeat(39)}`;
+      expect(enc(doc).length).toBe(2048);
+      rangeServer(() => partial(enc(doc), 'bytes 0-2047/2048'));
+      expect(await sniffSitemap('https://a.com/s.xml')).toMatchObject({ sniff: 'not-sitemap', size: 2048 });
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    });
+    it('cannot tell a head of exactly 2,048 characters from the end of the file, so it reads again', async () => {
+      const doc = `<!-- ${'x'.repeat(2039)} -->`;
+      expect(doc.length).toBe(2048);
+      rangeServer((range) => (range === null ? new Response(doc, { status: 200 }) : partial(doc, 'bytes 0-2047/2048')));
+      expect(await sniffSitemap('https://a.com/s.xml')).toMatchObject({ sniff: 'not-sitemap', size: 2048 });
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+    });
+    it('gives a plain 200 whose cut head runs on past the window the verdict of that head, without a second request', async () => {
+      rangeServer(() => new Response(byteStream(enc(`<?xml version="1.0"?><!-- ${'x'.repeat(2100)}`), enc(` -->${SITEMAP}`)), { status: 200 }));
+      expect(await sniffSitemap('https://a.com/s.xml')).toMatchObject({ sniff: 'not-sitemap', status: 200, size: null });
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    });
     it('uses the size of the plain GET when the ranged answer had none', async () => {
       rangeServer((range) => (range === null ? new Response(`<?xml version="1.0"?><!-- ${'x'.repeat(1900)} -->${SITEMAP}`, { status: 200, headers: { 'content-length': '5000' } }) : partial(`<?xml version="1.0"?><!-- ${'x'.repeat(2100)}`.slice(0, 2048), 'bytes 0-2047/*')));
       expect(await sniffSitemap('https://a.com/s.xml')).toMatchObject({ sniff: 'urlset', size: 5000 });
@@ -640,8 +868,10 @@ describe('sniffSitemap size', () => {
     it('does not read again when the whole file fit the range, or a root element was seen', async () => {
       rangeServer(() => partial('<!-- just a comment -->', 'bytes 0-22/23'));
       expect((await sniffSitemap('https://a.com/s.xml')).sniff).toBe('not-sitemap');
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
       rangeServer(() => partial(`<html>${' '.repeat(2042)}`, 'bytes 0-2047/60000'));
       expect((await sniffSitemap('https://a.com/s.xml')).sniff).toBe('not-sitemap');
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
       rangeServer(() => new Response('<!-- just a comment -->', { status: 200 }));
       expect((await sniffSitemap('https://a.com/s.xml')).sniff).toBe('not-sitemap');
       expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
@@ -657,6 +887,8 @@ describe('sniffSitemap size', () => {
     it.each([
       ['starts after byte 0', 'bytes 100-2047/9000'],
       ['runs past the range', 'bytes 0-4095/9000'],
+      ['runs past the range by one byte', 'bytes 0-2048/9000'],
+      ['is wrapped in other text', 'xbytes 0-2047/9000'],
       ['has no Content-Range', ''],
     ])('a 206 that %s is dropped: no size from it, the file is read with one plain GET', async (_name, range) => {
       rangeServer((asked) => (asked === null ? new Response(XML_HEAD, { status: 200 }) : new Response(body, { status: 206, headers: range ? { 'content-range': range } : {} })));
@@ -704,5 +936,7 @@ describe('mediaType', () => {
     expect(mediaType(`application/${'x'.repeat(89)}`)).toBeUndefined(); // 101
     expect(mediaType('<script>alert(1)</script>')).toBeUndefined();
     expect(mediaType('text')).toBeUndefined();
+    expect(mediaType('foo bar/baz')).toBeUndefined();
+    expect(mediaType('text/html foo')).toBeUndefined();
   });
 });
