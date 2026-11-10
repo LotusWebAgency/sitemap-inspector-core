@@ -1,0 +1,41 @@
+name: release
+
+# Stages the package on npm with provenance when a version tag is pushed; a maintainer approves the staged
+# version with 2FA (`npm stage approve` or npmjs.com) to publish it. npm trusted publishing: the package on
+# npmjs.com lists this repository and workflow file as its trusted publisher, so no token is stored anywhere.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # the OIDC token npm exchanges for a publish credential and signs the provenance with
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - name: tag matches package version
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          test "${GITHUB_REF_TYPE}" = "tag" && test "${GITHUB_REF_NAME}" = "v${version}" || { echo "${GITHUB_REF_TYPE} ${GITHUB_REF_NAME} is not tag v${version}"; exit 1; }
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - run: npm run check:pack
+      - run: npm stage publish --provenance --access public
+        env:
+          # Set only to create the package, before the trusted publisher exists; empty once the secret is deleted.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

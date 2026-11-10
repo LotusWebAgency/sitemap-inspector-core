@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml"  xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
+  <url>
+    <loc>https://shop.example/en/generators/16925-keel-cooled.html</loc>
+    <lastmod>2026-08-27T07:50:56-04:00</lastmod>
+    <image:image>
+      <image:loc>https://shop.example/55754-large_default/keel-cooled.jpg</image:loc>
+    </image:image>
+    <xhtml:link rel="alternate" hreflang="en" href="https://shop.example/en/generators/16925-keel-cooled.html"/>
+    <xhtml:link rel="alternate" hreflang="es" href="https://shop.example/es/generadores/16925-refrigerado.html"/>
+  </url>
+  <url>
+    <loc>https://shop.example/en/seabob/5029-seabob-f5-s.html</loc>
+    <image:image>
+      <image:loc>https://shop.example/42668-large_default/seabob-a.jpg</image:loc>
+    </image:image>
+    <image:image>
+      <image:loc>https://shop.example/10402-large_default/seabob-b.jpg</image:loc>
+      <image:title>Seabob F5 S</image:title>
+    </image:image>
+    <image:image>
+      <image:loc>https://shop.example/20151-large_default/seabob-c.jpg</image:loc>
+    </image:image>
+  </url>
+  <url>
+    <loc>https://shop.example/en/about.html</loc>
+    <lastmod>2026-01-15</lastmod>
+  </url>
+</urlset>
