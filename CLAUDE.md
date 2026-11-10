@@ -29,6 +29,6 @@ Streaming XML sitemap and robots.txt engine (`@lotuswebagency/sitemap-inspector-
 
 ## Release
 
-`CHANGELOG.md` holds the history. Version bump, changelog entry, gate, then push a `v<version>` tag: `.github/workflows/release.yml` runs the gate again and `npm stage publish --provenance` through npm trusted publishing (the package on npmjs.com names this repository and workflow as its trusted publisher, with stage-only permission; no token is stored). A maintainer then approves the staged version with 2FA (`npm stage approve <id>` or npmjs.com). The job checks that the tag matches `package.json`. Never publish by hand: `publishConfig.provenance` needs the CI OIDC token.
+`CHANGELOG.md` holds the history. Version bump, changelog entry, gate, then push a `v<version>` tag: `.github/workflows/release.yml` runs the gate again and `npm publish --provenance` through npm trusted publishing (the package on npmjs.com names this repository and workflow as its trusted publisher; no token is stored). The job checks that the tag matches `package.json`. Never publish by hand: `publishConfig.provenance` needs the CI OIDC token.
 
 Dependencies and actions are updated by Dependabot (`.github/dependabot.yml`); actions are pinned to commit SHAs with the version in a comment.

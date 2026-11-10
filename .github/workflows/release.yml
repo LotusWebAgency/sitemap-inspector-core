@@ -1,7 +1,6 @@
 name: release
 
-# Stages the package on npm with provenance when a version tag is pushed; a maintainer approves the staged
-# version with 2FA (`npm stage approve` or npmjs.com) to publish it. npm trusted publishing: the package on
+# Publishes to npm with provenance when a version tag is pushed. npm trusted publishing: the package on
 # npmjs.com lists this repository and workflow file as its trusted publisher, so no token is stored anywhere.
 on:
   push:
@@ -35,7 +34,4 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: npm run check:pack
-      - run: npm stage publish --provenance --access public
-        env:
-          # Set only to create the package, before the trusted publisher exists; empty once the secret is deleted.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - run: npm publish --provenance --access public

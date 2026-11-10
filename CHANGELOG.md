@@ -1,6 +1,10 @@
 # Changelog
 
-## 0.1.0 — unreleased
+## 1.0.0 — 2026-11-10
+
+First stable release; same code as 0.1.0. From here on the root exports, record shapes, row numbering, row flags and rule ids follow semver.
+
+## 0.1.0 — 2026-11-10
 
 First public release.
 

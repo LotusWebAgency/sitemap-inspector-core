@@ -1,6 +1,6 @@
 {
   "name": "@lotuswebagency/sitemap-inspector-core",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Streaming XML sitemap engine: fetch, tokenize, parse and validate sitemaps and robots.txt with bounded memory. No DOM, no browser APIs.",
   "keywords": [
     "sitemap",
